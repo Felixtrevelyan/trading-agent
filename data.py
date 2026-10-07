@@ -66,10 +66,8 @@ def _agg(res, field, how="sum"):
     full = max(cnt.values())
     rows = []
     for t in sorted(sums):
-        if how == "mean":
-            rows.append((t, sums[t] / cnt[t]))
-        elif cnt[t] >= 0.75 * full:
-            rows.append((t, sums[t]))
+        if cnt[t] >= 0.75 * full:  # skip hours only a few exchanges have reported yet
+            rows.append((t, sums[t] / cnt[t] if how == "mean" else sums[t]))
     return rows
 
 
