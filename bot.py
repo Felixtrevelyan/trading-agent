@@ -35,7 +35,9 @@ async def cached(key, fn, ttl, *args):
 
 
 async def run(question, assets=None):
-    assets = assets or [await agents.route(question, history)]
+    if not assets:
+        known = await cached("known", data.base_assets, 6 * 3600)
+        assets = [await agents.route(question, history, known)]
     of = {}
     for a in assets:  # sequential: Coinalyze allows 40 calls/min
         try:

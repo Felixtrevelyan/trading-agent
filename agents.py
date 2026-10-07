@@ -43,15 +43,26 @@ def _ask(model, system, content, max_tokens=2500):
     return text
 
 
-async def route(question, history):
-    """Which asset is the user asking about? Defaults to BTC."""
+NAMES = {"BITCOIN": "BTC", "ETHEREUM": "ETH", "ETHER": "ETH", "SOLANA": "SOL", "RIPPLE": "XRP",
+         "DOGECOIN": "DOGE", "CARDANO": "ADA", "AVALANCHE": "AVAX"}
+# tickers that are never ordinary words, so they match in any case ("btc", "Eth")
+ANY_CASE = {"BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "AVAX", "BNB", "SUI", "TRX", "LTC", "PEPE"}
+
+
+async def route(question, history, known):
+    """Which coin is the user asking about? Only ever returns a coin in `known`; defaults to BTC."""
+    for w in re.findall(r"[A-Za-z0-9]+", question):
+        up = w.upper()
+        t = NAMES.get(up) or (up if up in ANY_CASE or w.isupper() else None)  # other tickers only in CAPS
+        if t in known and len(t) >= 2:
+            return t
     ctx = "\n".join(f"User: {q}" for q, _ in history[-2:])
     out = await asyncio.to_thread(
         _ask, SUB_MODEL, "Reply with ONLY the uppercase ticker (e.g. BTC, ETH, SOL) of the crypto asset the "
         "latest user message is about, using prior messages for context. If none is specified reply BTC.",
-        f"{ctx}\nUser: {question}", 10)
-    m = re.search(r"[A-Z0-9]{2,10}", out.upper())
-    return m.group(0) if m else "BTC"
+        f"{ctx}\nUser: {question}", 20)
+    out = out.strip().upper()
+    return out if out in known else "BTC"  # anything but a bare known ticker (e.g. "I DON'T...") -> BTC
 
 
 async def analyse(question, of_data, macro_data, history=()):

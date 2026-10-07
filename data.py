@@ -26,15 +26,24 @@ def _get(path, **params):
 _cache = {}
 
 
+def _markets():
+    m = _cache.get("_markets")
+    if not m or time.time() - m[0] > 6 * 3600:
+        m = _cache["_markets"] = (time.time(), _get("/future-markets"))
+    return m[1]
+
+
+def base_assets():
+    """Every coin with a perpetual market on Coinalyze, e.g. {'BTC', 'ETH', ...}."""
+    return {m["base_asset"].upper() for m in _markets() if m.get("is_perpetual") and m.get("base_asset")}
+
+
 def top_symbols(asset, n=8):
     """Largest perp markets for an asset by open interest (cached 6h)."""
     c = _cache.get(asset)
     if c and time.time() - c[0] < 6 * 3600:
         return c[1]
-    m = _cache.get("_markets")
-    if not m or time.time() - m[0] > 6 * 3600:
-        m = _cache["_markets"] = (time.time(), _get("/future-markets"))
-    markets = m[1]
+    markets = _markets()
     perps = [m for m in markets if m.get("base_asset") == asset and m.get("is_perpetual")]
     stable = [m for m in perps if m.get("margined") == "STABLE"]
     cand = [m["symbol"] for m in (stable or perps)]
