@@ -19,7 +19,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 OWNER = int(os.environ["OWNER_ID"])
 ALERT_ASSETS = [a.strip().upper() for a in os.getenv("ALERT_ASSETS", "BTC,ETH").split(",") if a.strip()]
-REPORT_ASSETS = [a.strip().upper() for a in os.getenv("REPORT_ASSETS", "BTC,ETH,SOL").split(",") if a.strip()]
+REPORT_ASSETS = [a.strip().upper() for a in os.getenv("REPORT_ASSETS", "BTC,ETH").split(",") if a.strip()]
 history = []          # [(question, answer)], single-user so one shared list
 _cache = {}           # short TTL cache so rapid follow-ups don't burn API calls
 last_alert = {}
@@ -109,7 +109,7 @@ async def daily(ctx: ContextTypes.DEFAULT_TYPE):
 async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
     for asset in ALERT_ASSETS:
         try:
-            d = await cached(f"of-{asset}", data.orderflow, 120, asset)
+            d = await cached(f"ofa-{asset}", data.orderflow, 120, asset, False)  # alerts skip book/spot calls
         except Exception as e:
             logging.warning("alert fetch failed for %s: %s", asset, e)
             continue

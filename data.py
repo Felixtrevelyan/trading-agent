@@ -94,7 +94,111 @@ def _safe(fn, default=None):
         return default if default is not None else {"unavailable": f"{e.__class__.__name__}: {e}"}
 
 
-def orderflow(asset="BTC"):
+UA = {"User-Agent": "trading-agent/1.0"}
+
+
+def _pub(url, **params):
+    """Public exchange endpoint (no key)."""
+    r = requests.get(url, params=params, headers=UA, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _range_block(h):
+    """Range structure from hourly candles: the 72h range before the last 6h, and what price is doing at its edges."""
+    prior, recent, win = h[-78:-6], h[-6:], h[-78:]
+    rh, rl, price = max(x["h"] for x in prior), min(x["l"] for x in prior), h[-1]["c"]
+
+    def tests(level, high):
+        n, last = 0, -99  # separate touches = at least 4h apart
+        for i, x in enumerate(win):
+            near = x["h"] >= level * 0.997 if high else x["l"] <= level * 1.003
+            if near and i - last > 3:
+                n += 1
+            if near:
+                last = i
+        return n
+
+    hi6, lo6 = max(x["h"] for x in recent), min(x["l"] for x in recent)
+    pos = (price - rl) / (rh - rl) if rh > rl else 0.5
+    if hi6 > rh and price < rh:
+        state = "swept above range high in the last 6h and is back inside (failed breakout)"
+    elif price > rh:
+        state = "breaking out above range high"
+    elif lo6 < rl and price > rl:
+        state = "swept below range low in the last 6h and reclaimed it (failed breakdown)"
+    elif price < rl:
+        state = "breaking down below range low"
+    else:
+        state = "near range high" if pos > 0.8 else "near range low" if pos < 0.2 else "mid-range"
+    return {"range_high_72h": rh, "range_low_72h": rl, "range_width_pct": _pct(rh, rl),
+            "position_in_range_pct": round(pos * 100), "state": state,
+            "touches_of_range_high": tests(rh, True), "touches_of_range_low": tests(rl, False)}
+
+
+def _taker_flow(url, symbol):
+    k = _pub(url, symbol=symbol, interval="5m", limit=288)  # last 24h of 5m candles
+    rows = [(float(x[4]), float(x[5]), float(x[9])) for x in k]  # close, volume, taker buy volume
+    delta = [2 * tb - v for _, v, tb in rows]
+    return {f"cvd_{n}": round(sum(delta[-c:]), 1) for n, c in (("1h", 12), ("4h", 48), ("24h", 288))}, rows
+
+
+def flow_block(asset):
+    """Aggressive (taker) buying minus selling on Binance spot vs Binance perps, from 5m candles."""
+    spot, _ = _taker_flow("https://api.binance.com/api/v3/klines", asset + "USDT")
+    perps, rows = _taker_flow("https://fapi.binance.com/fapi/v1/klines", asset + "USDT")
+    closes = [c for c, _, _ in rows]
+    return {"units": f"{asset}; positive = aggressive buyers, negative = aggressive sellers",
+            "spot_binance": spot, "perps_binance": perps,
+            "price_change_1h_pct": _pct(closes[-1], closes[-13]), "price_change_4h_pct": _pct(closes[-1], closes[-49]),
+            "last_hour_5m_closes": [round(c, 4) for c in closes[-12:]]}
+
+
+def _depth_summary(bids, asks):
+    mid = (bids[0][0] + asks[0][0]) / 2
+    reach = min(mid / bids[-1][0] - 1, asks[-1][0] / mid - 1) * 100  # how far the returned book extends
+    out = {"mid": round(mid, 4), "book_depth_covered_pct": round(reach, 2)}
+    for pct in (0.5, 1, 2):
+        if pct > reach:
+            break
+        b = sum(p * s for p, s in bids if p >= mid * (1 - pct / 100))
+        a = sum(p * s for p, s in asks if p <= mid * (1 + pct / 100))
+        out[f"within_{pct}pct"] = {"bids_usd": round(b), "asks_usd": round(a),
+                                   "bid_share_pct": round(b / (a + b) * 100) if a + b else None}
+
+    def wall(levels):
+        bucket, agg = mid * 0.001, defaultdict(float)  # group into 0.1% price buckets
+        for p, s in levels:
+            if abs(p / mid - 1) <= 0.02:
+                agg[round(p / bucket)] += p * s
+        if not agg:
+            return None
+        k, v = max(agg.items(), key=lambda kv: kv[1])
+        return {"price": round(k * bucket, 4), "size_usd": round(v), "distance_pct": round((k * bucket / mid - 1) * 100, 2)}
+
+    out["largest_bid_wall"], out["largest_ask_wall"] = wall(bids), wall(asks)
+    return out
+
+
+def book_block(asset):
+    """Resting (passive) liquidity near price on the main spot books and Binance perps."""
+    def binance(url, limit):
+        d = _pub(url, symbol=asset + "USDT", limit=limit)
+        return [(float(p), float(q)) for p, q in d["bids"]], [(float(p), float(q)) for p, q in d["asks"]]
+
+    def coinbase():
+        d = _pub(f"https://api.exchange.coinbase.com/products/{asset}-USD/book", level=2)
+        return [(float(x[0]), float(x[1])) for x in d["bids"]], [(float(x[0]), float(x[1])) for x in d["asks"]]
+
+    out = {}
+    for name, fn in (("binance_spot", lambda: binance("https://api.binance.com/api/v3/depth", 5000)),
+                     ("coinbase_spot", coinbase),
+                     ("binance_perps", lambda: binance("https://fapi.binance.com/fapi/v1/depth", 1000))):
+        out[name] = _safe(lambda fn=fn: _depth_summary(*fn()))
+    return out
+
+
+def orderflow(asset="BTC", micro=True):
     asset = asset.upper()
     info = top_symbols(asset)
     syms, main = info["symbols"], info["symbols"][0]
@@ -157,9 +261,12 @@ def orderflow(asset="BTC"):
         "change_1h_pct": _pct(price, p1h), "change_24h_pct": ch24, "change_7d_pct": _pct(price, p7d),
         "high_24h": max(x["h"] for x in h[-24:]), "low_24h": min(x["l"] for x in h[-24:]),
         "high_7d": max(x["h"] for x in h), "low_7d": min(x["l"] for x in h),
+        "range": _safe(lambda: _range_block(h)),
         **cvd, "price_vs_cvd_24h": divergence,
         "open_interest": _safe(oi_block), "funding": _safe(funding_block),
         "liquidations": _safe(liq_block),
+        **({"flow_5m_spot_vs_perps": _safe(lambda: flow_block(asset)),
+            "order_book": _safe(lambda: book_block(asset))} if micro else {}),
     }
 
 
@@ -190,6 +297,10 @@ MACRO_TICKERS = {"DXY": "DX-Y.NYB", "US10Y_yield": "^TNX", "VIX": "^VIX", "SPX":
                  "NASDAQ": "^IXIC", "GOLD": "GC=F", "OIL_WTI": "CL=F"}
 
 
+# a 1-day move at least this big (in %) counts as macro worth mentioning
+MACRO_NOTABLE_1D = {"DXY": 0.7, "US10Y_yield": 2.5, "VIX": 15, "SPX": 1.5, "NASDAQ": 2.0, "GOLD": 2.5, "OIL_WTI": 4}
+
+
 def macro():
     out = {}
     for name, t in MACRO_TICKERS.items():
@@ -201,6 +312,14 @@ def macro():
                          "change_1m_pct": round((c.iloc[-1] / c.iloc[0] - 1) * 100, 2)}
         except Exception as e:
             out[name] = f"unavailable ({e.__class__.__name__})"
+    notable = []
+    for name, limit in MACRO_NOTABLE_1D.items():
+        v = out.get(name)
+        if isinstance(v, dict) and abs(v["change_1d_pct"]) >= limit:
+            notable.append(f"{name} {v['change_1d_pct']:+.2f}% today")
+    if isinstance(out.get("VIX"), dict) and out["VIX"]["last"] >= 25:
+        notable.append(f"VIX elevated at {out['VIX']['last']}")
+    out["notable"] = notable
     key = os.getenv("FRED_API_KEY")
     if key:
         for name, sid in {"fed_funds_rate": "DFF", "yield_curve_10y2y": "T10Y2Y"}.items():

@@ -12,25 +12,47 @@ RULES = ("Use ONLY the numbers in the data provided. Never invent or recall mark
          "If a data section says 'unavailable', say so rather than guessing. "
          "Funding values are already in percent per funding interval (0.01 means 0.01%, a normal level).")
 
-ORDERFLOW_PROMPT = f"""You are an orderflow/derivatives analyst for a discretionary crypto trader.
-Data is aggregated across the largest perp exchanges, possibly for several assets. For each asset read
-price action, CVD (net taker buying minus selling), open interest and funding together, plus liquidations.
-Key combinations: price and OI rising = new longs driving it; price falling with OI rising = new shorts;
-OI falling = positions closing (squeeze or capitulation); CVD diverging from price = the move lacks real buyers
-or sellers; extreme funding = one side crowded. For each asset give one directional bias, the price it points
-to next (use the provided 24h/7d highs and lows) and what would prove it wrong. {RULES}"""
+ORDERFLOW_PROMPT = f"""You are an orderflow analyst for a discretionary crypto trader. For each asset, read
+the data as a story of who is aggressive and who is passive:
+- Structure: the 72h range, where price sits in it, how many times the edges have been touched, sweeps and
+  failed breakouts. Repeated touches of an edge weaken it; a sweep that closes back inside often reverts.
+- Aggressive flow: taker CVD on Binance spot vs Binance perps (1h/4h/24h), plus aggregated perp CVD. Spot
+  selling into perp buying (or the reverse) is the key tell: perps chasing while spot sells usually fails.
+- Passive liquidity: bid vs ask depth near price on the spot books (Binance, Coinbase) and perps, and the
+  largest walls. Note which side is heavier and whether aggressive flow is eating into a wall.
+- Positioning: open interest change with price (new positions vs squeeze/closing), funding, liquidations.
+Give one directional call per asset with the most likely next move (a price from the data), and what would
+prove it wrong. {RULES}"""
 
-MACRO_PROMPT = f"""You are a macro analyst for a crypto trader. From the cross-asset data (dollar, yields,
-equities, volatility, gold, oil) say in 2-3 sentences whether the backdrop is risk-on, risk-off or mixed and
-whether it helps or hurts crypto right now. {RULES}"""
+MACRO_PROMPT = f"""You are a macro analyst for a crypto trader. Only the moves flagged as notable matter.
+In 1-2 sentences say what happened and whether it helps or hurts crypto today. {RULES}"""
+
+STYLE_EXAMPLES = """Example 1: BTC is ranging and is trading towards range high for the 3rd time. Short squeeze takes out
+the range high into a stacked passive spot book skewed towards the ask side and aggressive perps start buying
+while aggressive spot starts selling. More likely than not this will revert.
+
+Example 2: BTC is pulling back into an area where the passive spot book is skewed towards the buy side. However
+aggressive perps continue to long the grind down and aggressive spot continues to sell, unwinding that
+positioning into new lows. Good chance this passive wall gets eaten through unless this behaviour stabilises."""
 
 MAIN_PROMPT = f"""You are the lead trading assistant for a discretionary crypto trader. You get notes from an
-orderflow analyst and a macro analyst plus the raw data. Weigh them, check them against the raw data, and give
-ONE clear, decisive view. Never mention the analysts, never show disagreements or alternative readings, and do
-not hedge with "could be either". Do not mention long/short ratios, sentiment indexes or a key-levels list.
+orderflow analyst (and a macro analyst only when macro matters), plus the raw data. Check the notes against the
+raw data and give ONE decisive read per asset. Never mention the analysts, never show disagreements or
+alternative readings, and do not hedge with "could be either".
 
-Style: plain text for a phone (no markdown symbols like # or **), short lines, simple words, no jargon without
-meaning. Every number must come from the data. Not financial advice; the trader decides. {RULES}"""
+Write like an experienced orderflow trader describing the tape, in the style of these examples (style only,
+their facts are not current):
+{STYLE_EXAMPLES}
+
+That means: describe the structure (range, edges, sweeps), who is aggressive (spot vs perps), where passive
+liquidity sits and which side it is skewed to, what positioning is doing (open interest, funding,
+liquidations), then the conclusion and how likely it is. Only claim what the data shows: the flow data is
+5-minute and hourly, so never mention 1-minute behaviour; if spot or order book data is unavailable, say the
+read is based on perps only. Do not use chart patterns (order blocks, fair value gaps), long/short ratios,
+sentiment indexes or a key-levels list.
+
+Plain text for a phone: no markdown symbols like # or **. Every number must come from the data, with prices
+written with thousands separators. Not financial advice; the trader decides. {RULES}"""
 
 
 def _ask(model, system, content, max_tokens=2500):
@@ -66,37 +88,36 @@ async def route(question, history, known):
 
 
 async def analyse(question, of_data, macro_data, history=()):
-    of_json, macro_json = json.dumps(of_data, indent=1), json.dumps(macro_data, indent=1)
-    of_rep, macro_rep = await asyncio.gather(
-        asyncio.to_thread(_ask, SUB_MODEL, ORDERFLOW_PROMPT, f"Data:\n{of_json}\n\nTrader question: {question}"),
-        asyncio.to_thread(_ask, SUB_MODEL, MACRO_PROMPT, f"Data:\n{macro_json}\n\nTrader question: {question}"),
-    )
+    of_json = json.dumps(of_data, indent=1)
+    jobs = [asyncio.to_thread(_ask, SUB_MODEL, ORDERFLOW_PROMPT, f"Data:\n{of_json}\n\nTrader question: {question}")]
+    notable = macro_data.get("notable")
+    if notable:  # macro rarely matters; only bring it in on a notable move
+        macro_json = json.dumps(macro_data, indent=1)
+        jobs.append(asyncio.to_thread(_ask, SUB_MODEL, MACRO_PROMPT, f"Data:\n{macro_json}"))
+    reps = await asyncio.gather(*jobs)
+    macro_note = reps[1] if notable else "Nothing notable in macro today. Do not mention macro."
     convo = "\n".join(f"Trader: {q}\nYou: {a}" for q, a in history[-4:])
     request = question if question == DAILY_QUESTION else f"{question}\n\n{CHAT_STYLE}"
     final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {request}\n\n"
-             f"=== ORDERFLOW ANALYST ===\n{of_rep}\n\n=== MACRO ANALYST ===\n{macro_rep}\n\n"
-             f"=== RAW DATA ===\n{of_json}\n{macro_json}")
+             f"=== ORDERFLOW NOTES ===\n{reps[0]}\n\n=== MACRO NOTES ===\n{macro_note}\n\n"
+             f"=== RAW DATA ===\n{of_json}" + (f"\n{macro_json}" if notable else ""))
     return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 8000)  # headroom: thinking counts toward max_tokens
 
 
-DAILY_QUESTION = """Write the market report for every asset in the data, BTC first. Use exactly this layout
-and keep each line to one sentence. Write prices with thousands separators (e.g. $83,361):
+DAILY_QUESTION = """Write the market report for every asset in the data, BTC first, in exactly this layout:
 
 MARKET REPORT
 
 [ASSET] $[price] ([24h change]% 24h)
-Price: what price has been doing.
-CVD: what net buying/selling shows and what it means here.
-Open interest: rising or falling, and what that says about who is driving the move.
-Funding: what it shows about positioning.
-Outlook: Bullish, Bearish or Neutral. Likely move to $[target from the data]. Wrong if [condition].
+[One paragraph of 3-5 sentences reading the tape, in the style of the examples.]
+Outlook: Bullish, Bearish or Neutral. Likely move to $[price from the data]. Wrong if [condition].
 
-(repeat the block for each asset)
+(repeat for each asset)
 
-MACRO: one or two sentences on whether the backdrop helps or hurts crypto.
+MACRO: [one or two sentences. Include this line ONLY if the macro notes say something notable happened.]
 
-BOTTOM LINE: one or two sentences on the overall call, including trade or no trade.
-Keep the whole report under 300 words."""
+BOTTOM LINE: [one or two sentences, including trade or no trade.]
+Keep the whole report under 250 words."""
 
-CHAT_STYLE = ("Answer in under 120 words: one clear view, which of price/CVD/open interest/funding drive it, "
-              "where price is likely to move next and what would make you wrong.")
+CHAT_STYLE = ("Answer in under 150 words as one short paragraph reading the tape in the style of the examples, "
+              "then a final line: Outlook: [bias]. Likely move to $[price]. Wrong if [condition].")
