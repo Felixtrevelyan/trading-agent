@@ -27,10 +27,10 @@ an orderflow analyst and a macro analyst, plus raw data and recent conversation.
 Be skeptical, not agreeable. For any trade idea give direction, entry zone, invalidation, target and honest
 confidence. Always state the strongest argument AGAINST the idea. Flag when a setup conflicts with the macro
 regime. If there is no good trade say 'no trade' and why. Format for a phone screen: short paragraphs, no
-tables. Not financial advice; the trader decides. {RULES}"""
+tables, and no markdown symbols (#, **, __) since Telegram shows them as raw text. Not financial advice; the trader decides. {RULES}"""
 
 
-def _ask(model, system, content, max_tokens=900):
+def _ask(model, system, content, max_tokens=2500):
     r = client.messages.create(model=model, max_tokens=max_tokens, system=system,
                                messages=[{"role": "user", "content": content}])
     # newer models return thinking blocks before the text, so only collect text blocks

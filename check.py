@@ -1,7 +1,7 @@
 """Run this first: python check.py  (verifies Coinalyze + macro data before you start the bot)"""
 import json
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)  # .env wins over stale shell variables
 import data
 
 for asset in ("BTC",):
