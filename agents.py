@@ -16,7 +16,7 @@ ORDERFLOW_PROMPT = f"""You are an orderflow analyst for a discretionary crypto t
 the data as a story of who is aggressive and who is passive:
 - Structure: the 72h range, where price sits in it, how many times the edges have been touched, sweeps and
   failed breakouts. Repeated touches of an edge weaken it; a sweep that closes back inside often reverts.
-- Aggressive flow: taker CVD on Binance spot vs Binance perps (1h/4h/24h), plus aggregated perp CVD. Spot
+- Aggressive flow: taker CVD on spot vs perps (1h/4h/24h, aggregated across exchanges), plus hourly perp CVD. Spot
   selling into perp buying (or the reverse) is the key tell: perps chasing while spot sells usually fails.
 - Passive liquidity: bid vs ask depth near price on the spot books (Binance, Coinbase) and perps, and the
   largest walls. Note which side is heavier and whether aggressive flow is eating into a wall.

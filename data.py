@@ -136,20 +136,66 @@ def _range_block(h):
             "touches_of_range_high": tests(rh, True), "touches_of_range_low": tests(rl, False)}
 
 
-def _taker_flow(url, symbol):
-    k = _pub(url, symbol=symbol, interval="5m", limit=288)  # last 24h of 5m candles
-    rows = [(float(x[4]), float(x[5]), float(x[9])) for x in k]  # close, volume, taker buy volume
-    delta = [2 * tb - v for _, v, tb in rows]
-    return {f"cvd_{n}": round(sum(delta[-c:]), 1) for n, c in (("1h", 12), ("4h", 48), ("24h", 288))}, rows
+SPOT_QUOTES = {"USDT", "USD", "USDC", "FDUSD"}
 
 
-def flow_block(asset):
-    """Aggressive (taker) buying minus selling on Binance spot vs Binance perps, from 5m candles."""
-    spot, _ = _taker_flow("https://api.binance.com/api/v3/klines", asset + "USDT")
-    perps, rows = _taker_flow("https://fapi.binance.com/fapi/v1/klines", asset + "USDT")
-    closes = [c for c, _, _ in rows]
-    return {"units": f"{asset}; positive = aggressive buyers, negative = aggressive sellers",
-            "spot_binance": spot, "perps_binance": perps,
+def spot_symbols(asset, n=6):
+    """Largest spot markets for an asset on Coinalyze by 24h dollar volume (cached 6h)."""
+    c = _cache.get("spot-" + asset)
+    if c and time.time() - c[0] < 6 * 3600:
+        return c[1]
+    m = _cache.get("_spot_markets")
+    if not m or time.time() - m[0] > 6 * 3600:
+        m = _cache["_spot_markets"] = (time.time(), _get("/spot-markets"))
+    cand = [x["symbol"] for x in m[1] if str(x.get("base_asset", "")).upper() == asset
+            and str(x.get("quote_asset", "")).upper() in SPOT_QUOTES and x.get("has_buy_sell_data", True)]
+    if not cand:
+        raise ValueError(f"No spot markets found for {asset}")
+    vol = {}
+    for i in range(0, len(cand), 20):
+        for s in _hist("/ohlcv-history", cand[i:i + 20], "1hour", 24):
+            vol[s["symbol"]] = sum((p.get("v") or 0) * (p.get("c") or 0) for p in s.get("history", []))
+    out = sorted((s for s in vol if vol[s] > 0), key=vol.get, reverse=True)[:n]
+    if not out:
+        raise ValueError(f"No spot volume data for {asset}")
+    _cache["spot-" + asset] = (time.time(), out)
+    return out
+
+
+def _cvd_windows(delta):
+    return {f"cvd_{n}": round(sum(delta[-c:]), 1) for n, c in (("1h", 12), ("4h", 48), ("24h", 288))}
+
+
+def _coinalyze_cvd_5m(syms):
+    res = _hist("/ohlcv-history", syms, "5min", 24)
+    for s in res:
+        for p in s.get("history", []):
+            p["delta"] = 2 * p["bv"] - p["v"] if p.get("bv") is not None and p.get("v") is not None else None
+    delta = [v for _, v in _agg(res, "delta")]
+    if len(delta) < 48:
+        raise RuntimeError(f"only {len(delta)} 5min candles returned")
+    return _cvd_windows(delta), res
+
+
+def _binance_cvd_5m(url, symbol):
+    k = _pub(url, symbol=symbol, interval="5m", limit=288)
+    return _cvd_windows([2 * float(x[9]) - float(x[5]) for x in k])  # taker buy vs total volume
+
+
+def flow_block(asset, perp_syms):
+    """Aggressive (taker) buying minus selling, spot vs perps, from 5min candles. Coinalyze aggregates across
+    exchanges; Binance alone is the fallback if Coinalyze spot data is unavailable."""
+    perps, res = _coinalyze_cvd_5m(perp_syms)
+    try:
+        spot_syms = spot_symbols(asset)
+        spot, _ = _coinalyze_cvd_5m(spot_syms)
+        spot["markets"], source = spot_syms, "Coinalyze, aggregated across exchanges"
+    except Exception as e:
+        spot = _binance_cvd_5m("https://api.binance.com/api/v3/klines", asset + "USDT")
+        source = f"spot from Binance only (Coinalyze spot failed: {e.__class__.__name__}); perps from Coinalyze"
+    closes = [p["c"] for p in next(s["history"] for s in res if s["symbol"] == perp_syms[0])]
+    return {"source": source, "units": f"{asset}; positive = aggressive buyers, negative = aggressive sellers",
+            "spot": spot, "perps": perps,
             "price_change_1h_pct": _pct(closes[-1], closes[-13]), "price_change_4h_pct": _pct(closes[-1], closes[-49]),
             "last_hour_5m_closes": [round(c, 4) for c in closes[-12:]]}
 
@@ -265,7 +311,7 @@ def orderflow(asset="BTC", micro=True):
         **cvd, "price_vs_cvd_24h": divergence,
         "open_interest": _safe(oi_block), "funding": _safe(funding_block),
         "liquidations": _safe(liq_block),
-        **({"flow_5m_spot_vs_perps": _safe(lambda: flow_block(asset)),
+        **({"flow_5m_spot_vs_perps": _safe(lambda: flow_block(asset, syms)),
             "order_book": _safe(lambda: book_block(asset))} if micro else {}),
     }
 

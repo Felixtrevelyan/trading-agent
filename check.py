@@ -9,5 +9,9 @@ for asset in ("BTC",):
     d = data.orderflow(asset)
     print(json.dumps(d, indent=1))
     print("alerts now:", data.detect_alerts(d))
+    fl, bk = d.get("flow_5m_spot_vs_perps", {}), d.get("order_book", {})
+    print("SUMMARY spot/perp flow:", fl.get("source") or fl.get("unavailable"))
+    for k, v in bk.items():
+        print(f"SUMMARY book {k}:", "unavailable: " + v["unavailable"] if "unavailable" in v else "ok")
 print("--- macro ---")
 print(json.dumps(data.macro(), indent=1))
