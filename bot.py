@@ -14,6 +14,9 @@ import agents
 import data
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every Telegram poll, and the URL contains the bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 OWNER = int(os.environ["OWNER_ID"])
 ALERT_ASSETS = [a.strip().upper() for a in os.getenv("ALERT_ASSETS", "BTC,ETH").split(",") if a.strip()]
 history = []          # [(question, answer)], single-user so one shared list
