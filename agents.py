@@ -33,7 +33,11 @@ tables. Not financial advice; the trader decides. {RULES}"""
 def _ask(model, system, content, max_tokens=900):
     r = client.messages.create(model=model, max_tokens=max_tokens, system=system,
                                messages=[{"role": "user", "content": content}])
-    return r.content[0].text
+    # newer models return thinking blocks before the text, so only collect text blocks
+    text = "".join(b.text for b in r.content if b.type == "text")
+    if not text:
+        raise RuntimeError(f"{model} returned no text (stop_reason={r.stop_reason})")
+    return text
 
 
 async def route(question, history):
@@ -57,7 +61,7 @@ async def analyse(question, of_data, macro_data, history=()):
     final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {question}\n\n"
              f"=== ORDERFLOW ANALYST ===\n{of_rep}\n\n=== MACRO ANALYST ===\n{macro_rep}\n\n"
              f"=== RAW DATA ===\n{of_json}\n{macro_json}")
-    return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 1500)
+    return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 8000)  # headroom: thinking counts toward max_tokens
 
 
 DAILY_QUESTION = ("Write the daily market report: 1) headline summary, 2) orderflow/positioning, "
