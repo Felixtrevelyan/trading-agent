@@ -7,7 +7,7 @@
    "unavailable" tells you which Coinalyze call failed and why.
 5. `python bot.py` (use tmux/systemd on a VPS so it stays up).
 
-Telegram: `/report [asset]`, `/reset`, or just talk to it. Alerts (liquidation spikes, extreme funding,
+Telegram: `/report` (BTC, ETH, SOL by default; set REPORT_ASSETS) or `/report SOL`, `/reset`, or just talk to it. Alerts (liquidation spikes, extreme funding,
 OI jumps, fast moves) check every 10 min with a 2h cooldown per type.
 
 Notes: Coinalyze limit is 40 calls/min (client retries on 429). Funding intervals differ by exchange

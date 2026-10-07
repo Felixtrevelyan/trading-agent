@@ -31,7 +31,10 @@ def top_symbols(asset, n=8):
     c = _cache.get(asset)
     if c and time.time() - c[0] < 6 * 3600:
         return c[1]
-    markets = _get("/future-markets")
+    m = _cache.get("_markets")
+    if not m or time.time() - m[0] > 6 * 3600:
+        m = _cache["_markets"] = (time.time(), _get("/future-markets"))
+    markets = m[1]
     perps = [m for m in markets if m.get("base_asset") == asset and m.get("is_perpetual")]
     stable = [m for m in perps if m.get("margined") == "STABLE"]
     cand = [m["symbol"] for m in (stable or perps)]
@@ -129,10 +132,6 @@ def orderflow(asset="BTC"):
                 "range_24h_pct": [round(min(vals), 4), round(max(vals), 4)] if vals else None,
                 "by_exchange_pct": {s: round(v, 4) for s, v in cur.items()}}
 
-    def ls_block():
-        s = _agg(_hist("/long-short-ratio-history", syms, "1hour", 30), "r", how="mean")
-        return {"avg_long_short_ratio_now": round(s[-1][1], 3), "24h_ago": round(s[-25][1], 3)}
-
     def liq_block():
         lq = _hist("/liquidation-history", syms, "1hour", 170, convert_to_usd="true")
         lo, sh = dict(_agg(lq, "l")), dict(_agg(lq, "s"))
@@ -151,7 +150,7 @@ def orderflow(asset="BTC"):
         "high_7d": max(x["h"] for x in h), "low_7d": min(x["l"] for x in h),
         **cvd, "price_vs_cvd_24h": divergence,
         "open_interest": _safe(oi_block), "funding": _safe(funding_block),
-        "positioning": _safe(ls_block), "liquidations": _safe(liq_block),
+        "liquidations": _safe(liq_block),
     }
 
 
@@ -193,12 +192,6 @@ def macro():
                          "change_1m_pct": round((c.iloc[-1] / c.iloc[0] - 1) * 100, 2)}
         except Exception as e:
             out[name] = f"unavailable ({e.__class__.__name__})"
-    try:
-        fg = requests.get("https://api.alternative.me/fng/?limit=2", timeout=10).json()["data"]
-        out["crypto_fear_greed"] = {"now": int(fg[0]["value"]), "label": fg[0]["value_classification"],
-                                    "yesterday": int(fg[1]["value"])}
-    except Exception:
-        out["crypto_fear_greed"] = "unavailable"
     key = os.getenv("FRED_API_KEY")
     if key:
         for name, sid in {"fed_funds_rate": "DFF", "yield_curve_10y2y": "T10Y2Y"}.items():

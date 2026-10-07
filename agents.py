@@ -9,25 +9,28 @@ MAIN_MODEL = os.getenv("MAIN_MODEL", "claude-sonnet-5-5")
 SUB_MODEL = os.getenv("SUB_MODEL", "claude-haiku-4-5-20251001")
 
 RULES = ("Use ONLY the numbers in the data provided. Never invent or recall market figures. "
-         "If a data section says 'unavailable', say so rather than guessing. Be concise and specific.")
+         "If a data section says 'unavailable', say so rather than guessing. "
+         "Funding values are already in percent per funding interval (0.01 means 0.01%, a normal level).")
 
 ORDERFLOW_PROMPT = f"""You are an orderflow/derivatives analyst for a discretionary crypto trader.
-Data is aggregated across the largest perp exchanges. Interpret CVD (taker delta), price-vs-CVD divergence,
-open interest changes, funding (and predicted funding), long/short ratio and liquidations.
-Look for: OI rising/falling with price (new positions vs squeeze), crowded positioning, funding extremes,
-liquidation flushes that may mark exhaustion. Output: (1) read of current flow, (2) 1-2 candidate setups with
-entry zone, invalidation and target using the provided highs/lows, (3) what would change your view. {RULES}"""
+Data is aggregated across the largest perp exchanges, possibly for several assets. For each asset read
+price action, CVD (net taker buying minus selling), open interest and funding together, plus liquidations.
+Key combinations: price and OI rising = new longs driving it; price falling with OI rising = new shorts;
+OI falling = positions closing (squeeze or capitulation); CVD diverging from price = the move lacks real buyers
+or sellers; extreme funding = one side crowded. For each asset give one directional bias, the price it points
+to next (use the provided 24h/7d highs and lows) and what would prove it wrong. {RULES}"""
 
-MACRO_PROMPT = f"""You are a macro analyst for a crypto trader. From the cross-asset data assess the risk
-environment: dollar, yields, equities, volatility, gold, sentiment. Output: (1) risk-on / risk-off / mixed with
-reasons, (2) what is supportive or hostile for crypto right now, (3) what to watch next. {RULES}"""
+MACRO_PROMPT = f"""You are a macro analyst for a crypto trader. From the cross-asset data (dollar, yields,
+equities, volatility, gold, oil) say in 2-3 sentences whether the backdrop is risk-on, risk-off or mixed and
+whether it helps or hurts crypto right now. {RULES}"""
 
-MAIN_PROMPT = f"""You are the lead trading assistant for a discretionary crypto trader. You receive reports from
-an orderflow analyst and a macro analyst, plus raw data and recent conversation. Synthesize a clear view.
-Be skeptical, not agreeable. For any trade idea give direction, entry zone, invalidation, target and honest
-confidence. Always state the strongest argument AGAINST the idea. Flag when a setup conflicts with the macro
-regime. If there is no good trade say 'no trade' and why. Format for a phone screen: short paragraphs, no
-tables, and no markdown symbols (#, **, __) since Telegram shows them as raw text. Not financial advice; the trader decides. {RULES}"""
+MAIN_PROMPT = f"""You are the lead trading assistant for a discretionary crypto trader. You get notes from an
+orderflow analyst and a macro analyst plus the raw data. Weigh them, check them against the raw data, and give
+ONE clear, decisive view. Never mention the analysts, never show disagreements or alternative readings, and do
+not hedge with "could be either". Do not mention long/short ratios, sentiment indexes or a key-levels list.
+
+Style: plain text for a phone (no markdown symbols like # or **), short lines, simple words, no jargon without
+meaning. Every number must come from the data. Not financial advice; the trader decides. {RULES}"""
 
 
 def _ask(model, system, content, max_tokens=2500):
@@ -58,11 +61,31 @@ async def analyse(question, of_data, macro_data, history=()):
         asyncio.to_thread(_ask, SUB_MODEL, MACRO_PROMPT, f"Data:\n{macro_json}\n\nTrader question: {question}"),
     )
     convo = "\n".join(f"Trader: {q}\nYou: {a}" for q, a in history[-4:])
-    final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {question}\n\n"
+    request = question if question == DAILY_QUESTION else f"{question}\n\n{CHAT_STYLE}"
+    final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {request}\n\n"
              f"=== ORDERFLOW ANALYST ===\n{of_rep}\n\n=== MACRO ANALYST ===\n{macro_rep}\n\n"
              f"=== RAW DATA ===\n{of_json}\n{macro_json}")
     return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 8000)  # headroom: thinking counts toward max_tokens
 
 
-DAILY_QUESTION = ("Write the daily market report: 1) headline summary, 2) orderflow/positioning, "
-                  "3) macro backdrop, 4) key levels, 5) trade ideas (or no trade) with invalidation.")
+DAILY_QUESTION = """Write the market report for every asset in the data, BTC first. Use exactly this layout
+and keep each line to one sentence. Write prices with thousands separators (e.g. $83,361):
+
+MARKET REPORT
+
+[ASSET] $[price] ([24h change]% 24h)
+Price: what price has been doing.
+CVD: what net buying/selling shows and what it means here.
+Open interest: rising or falling, and what that says about who is driving the move.
+Funding: what it shows about positioning.
+Outlook: Bullish, Bearish or Neutral. Likely move to $[target from the data]. Wrong if [condition].
+
+(repeat the block for each asset)
+
+MACRO: one or two sentences on whether the backdrop helps or hurts crypto.
+
+BOTTOM LINE: one or two sentences on the overall call, including trade or no trade.
+Keep the whole report under 300 words."""
+
+CHAT_STYLE = ("Answer in under 120 words: one clear view, which of price/CVD/open interest/funding drive it, "
+              "where price is likely to move next and what would make you wrong.")

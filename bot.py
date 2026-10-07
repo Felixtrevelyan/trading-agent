@@ -19,6 +19,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 OWNER = int(os.environ["OWNER_ID"])
 ALERT_ASSETS = [a.strip().upper() for a in os.getenv("ALERT_ASSETS", "BTC,ETH").split(",") if a.strip()]
+REPORT_ASSETS = [a.strip().upper() for a in os.getenv("REPORT_ASSETS", "BTC,ETH,SOL").split(",") if a.strip()]
 history = []          # [(question, answer)], single-user so one shared list
 _cache = {}           # short TTL cache so rapid follow-ups don't burn API calls
 last_alert = {}
@@ -33,19 +34,25 @@ async def cached(key, fn, ttl, *args):
     return v
 
 
-async def run(question, asset=None):
-    asset = asset or await agents.route(question, history)
-    try:
-        of = await cached(f"of-{asset}", data.orderflow, 120, asset)
-    except ValueError:
-        return f"I couldn't find perp markets for {asset}."
+async def run(question, assets=None):
+    assets = assets or [await agents.route(question, history)]
+    of = {}
+    for a in assets:  # sequential: Coinalyze allows 40 calls/min
+        try:
+            of[a] = await cached(f"of-{a}", data.orderflow, 120, a)
+        except ValueError:
+            if len(assets) == 1:
+                return f"I couldn't find perp markets for {a}."
+        except Exception as e:
+            logging.warning("orderflow fetch failed for %s: %s", a, e)
+            of[a] = {"unavailable": str(e)}
     mc = await cached("macro", data.macro, 600)
     answer = await agents.analyse(question, of, mc, history)
     history.append((question, answer[:1500]))
     del history[:-8]
     with open("ideas.jsonl", "a") as f:  # log so outcomes can be reviewed later
-        f.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), "asset": asset, "q": question,
-                            "price": of["price"], "answer": answer}) + "\n")
+        f.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), "assets": list(of), "q": question,
+                            "prices": {a: d.get("price") for a, d in of.items()}, "answer": answer}) + "\n")
     return answer
 
 
@@ -70,10 +77,10 @@ async def reset(update: Update, ctx):
 async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER:
         return
-    asset = ctx.args[0].upper() if ctx.args else "BTC"
-    await update.message.reply_text(f"Gathering {asset} data...")
+    assets = [a.upper() for a in ctx.args] or REPORT_ASSETS
+    await update.message.reply_text(f"Gathering {', '.join(assets)} data...")
     try:
-        await send_long(update.message.reply_text, await run(agents.DAILY_QUESTION, asset))
+        await send_long(update.message.reply_text, await run(agents.DAILY_QUESTION, assets))
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
@@ -91,7 +98,7 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def daily(ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        text = await run(agents.DAILY_QUESTION, "BTC")
+        text = await run(agents.DAILY_QUESTION, REPORT_ASSETS)
         await send_long(lambda t: ctx.bot.send_message(OWNER, t), text)
     except Exception as e:
         await ctx.bot.send_message(OWNER, f"Daily report failed: {e}")
