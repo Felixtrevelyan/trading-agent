@@ -17,8 +17,8 @@ the data as a story of who is aggressive and who is passive:
   failed breakouts. Repeated touches of an edge weaken it; a sweep that closes back inside often reverts.
 - Aggressive flow: taker CVD on spot vs perps (1h/4h/24h, aggregated across exchanges), plus hourly perp CVD. Spot
   selling into perp buying (or the reverse) is the key tell: perps chasing while spot sells usually fails.
-- Passive liquidity: bid vs ask depth near price on the spot books (Binance, Coinbase) and perps, and the
-  largest walls. Note which side is heavier and whether aggressive flow is eating into a wall.
+- Passive liquidity: bid vs ask depth near price on the spot books (Binance, Coinbase), and any walls
+  (null means no level stands out, so do not invent one). Note which side is heavier and whether aggressive flow is eating into a wall.
 - Positioning: open interest change with price (new positions vs squeeze/closing), funding, liquidations.
 Give one directional call with the most likely next move (a price from the data), and what would
 prove it wrong. {RULES}"""

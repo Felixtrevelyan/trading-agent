@@ -1,5 +1,8 @@
 """Deterministic BTC data layer (Coinalyze, plus Binance/Coinbase order books). All numbers computed here, never by the LLM."""
+import json
+import logging
 import os
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 BASE = "https://api.coinalyze.net/v1"
+STATS = {"coinalyze_calls": 0, "rate_limited": 0, "rate_limit_wait_s": 0.0}  # printed by check.py
+TIMINGS = {}  # seconds per data block on the last orderflow() call
+_slots = threading.Semaphore(4)  # at most 4 Coinalyze requests at once (limit is 40/min)
 
 
 def _get(path, **params):
@@ -14,9 +20,15 @@ def _get(path, **params):
     if not key:
         raise RuntimeError("COINALYZE_API_KEY not set")
     for _ in range(4):
-        r = requests.get(BASE + path, params=params, headers={"api_key": key}, timeout=25)
+        with _slots:
+            STATS["coinalyze_calls"] += 1
+            r = requests.get(BASE + path, params=params, headers={"api_key": key}, timeout=25)
         if r.status_code == 429:  # rate limit (40 calls/min)
-            time.sleep(float(r.headers.get("Retry-After", 5)) + 0.5)
+            wait = min(float(r.headers.get("Retry-After", 5)), 65) + 0.5
+            STATS["rate_limited"] += 1
+            STATS["rate_limit_wait_s"] += wait
+            logging.warning("Coinalyze rate limit on %s, waiting %.0fs", path, wait)
+            time.sleep(wait)
             continue
         r.raise_for_status()
         return r.json()
@@ -24,6 +36,32 @@ def _get(path, **params):
 
 
 _cache = {}
+# which markets to use changes slowly, so the picks are saved to disk and survive restarts
+_DISK = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".market_cache.json")
+_PICK_TTL = 12 * 3600
+
+
+def _recall(key):
+    try:
+        with open(_DISK) as f:
+            t, v = json.load(f)[key]
+        return v if time.time() - t < _PICK_TTL else None
+    except Exception:
+        return None
+
+
+def _remember(key, value):
+    try:
+        with open(_DISK) as f:
+            saved = json.load(f)
+    except Exception:
+        saved = {}
+    saved[key] = [time.time(), value]
+    try:
+        with open(_DISK, "w") as f:
+            json.dump(saved, f)
+    except OSError:
+        pass
 
 
 def _markets():
@@ -34,10 +72,14 @@ def _markets():
 
 
 def top_symbols(asset, n=8):
-    """Largest perp markets for an asset by open interest (cached 6h)."""
+    """Largest perp markets for an asset by open interest (picked every 12h, saved to disk)."""
     c = _cache.get(asset)
-    if c and time.time() - c[0] < 6 * 3600:
+    if c and time.time() - c[0] < _PICK_TTL:
         return c[1]
+    saved = _recall("perps-" + asset)
+    if saved:
+        _cache[asset] = (time.time(), saved)
+        return saved
     markets = _markets()
     perps = [m for m in markets if m.get("base_asset") == asset and m.get("is_perpetual")]
     stable = [m for m in perps if m.get("margined") == "STABLE"]
@@ -50,6 +92,7 @@ def top_symbols(asset, n=8):
     ois = sorted([o for o in ois if o.get("value")], key=lambda o: o["value"], reverse=True)[:n]
     out = {"symbols": [o["symbol"] for o in ois], "oi": {o["symbol"]: o["value"] for o in ois}}
     _cache[asset] = (time.time(), out)
+    _remember("perps-" + asset, out)
     return out
 
 
@@ -135,10 +178,14 @@ SPOT_QUOTES = {"USDT", "USD", "USDC", "FDUSD"}
 
 
 def spot_symbols(asset, n=6):
-    """Largest spot markets for an asset on Coinalyze by 24h dollar volume (cached 6h)."""
+    """Largest spot markets for an asset on Coinalyze by 24h dollar volume (picked every 12h)."""
     c = _cache.get("spot-" + asset)
-    if c and time.time() - c[0] < 6 * 3600:
+    if c and time.time() - c[0] < _PICK_TTL:
         return c[1]
+    saved = _recall("spot-" + asset)
+    if saved:
+        _cache["spot-" + asset] = (time.time(), saved)
+        return saved
     m = _cache.get("_spot_markets")
     if not m or time.time() - m[0] > 6 * 3600:
         m = _cache["_spot_markets"] = (time.time(), _get("/spot-markets"))
@@ -154,6 +201,7 @@ def spot_symbols(asset, n=6):
     if not out:
         raise ValueError(f"No spot volume data for {asset}")
     _cache["spot-" + asset] = (time.time(), out)
+    _remember("spot-" + asset, out)
     return out
 
 
@@ -198,7 +246,8 @@ def flow_block(asset, perp_syms):
 def _depth_summary(bids, asks):
     mid = (bids[0][0] + asks[0][0]) / 2
     reach = min(mid / bids[-1][0] - 1, asks[-1][0] / mid - 1) * 100  # how far the returned book extends
-    out = {"mid": round(mid, 4), "book_depth_covered_pct": round(reach, 2)}
+    out = {"mid": round(mid, 2), "book_depth_covered_pct": round(min(reach, 100), 2),
+           "walls_note": "a wall is a 0.1% price level 0.15-2% from price with 3x+ the typical size; null = none stands out"}
     for pct in (0.5, 1, 2):
         if pct > reach:
             break
@@ -208,21 +257,28 @@ def _depth_summary(bids, asks):
                                    "bid_share_pct": round(b / (a + b) * 100) if a + b else None}
 
     def wall(levels):
-        bucket, agg = mid * 0.001, defaultdict(float)  # group into 0.1% price buckets
+        """Biggest 0.1% price bucket between 0.15% and 2% from price, only if it is at least 3x a typical bucket.
+        Liquidity always piles up right at the touch, so that zone is not counted as a wall."""
+        bucket, agg, far = mid * 0.001, defaultdict(float), min(reach, 2) / 100
         for p, s in levels:
-            if abs(p / mid - 1) <= 0.02:
+            if 0.0015 < abs(p / mid - 1) <= far:
                 agg[round(p / bucket)] += p * s
-        if not agg:
+        if len(agg) < 4:
             return None
+        sizes = sorted(agg.values())
+        typical = sizes[len(sizes) // 2]
         k, v = max(agg.items(), key=lambda kv: kv[1])
-        return {"price": round(k * bucket, 4), "size_usd": round(v), "distance_pct": round((k * bucket / mid - 1) * 100, 2)}
+        if v < 3 * typical:
+            return None
+        return {"price": round(k * bucket, 2), "size_usd": round(v), "distance_pct": round((k * bucket / mid - 1) * 100, 2),
+                "x_typical_level": round(v / typical, 1)}
 
     out["largest_bid_wall"], out["largest_ask_wall"] = wall(bids), wall(asks)
     return out
 
 
 def book_block(asset):
-    """Resting (passive) liquidity near price on the main spot books and Binance perps."""
+    """Resting (passive) liquidity near price on the two biggest spot books."""
     def binance(url, limit):
         d = _pub(url, symbol=asset + "USDT", limit=limit)
         return [(float(p), float(q)) for p, q in d["bids"]], [(float(p), float(q)) for p, q in d["asks"]]
@@ -232,8 +288,7 @@ def book_block(asset):
         return [(float(x[0]), float(x[1])) for x in d["bids"]], [(float(x[0]), float(x[1])) for x in d["asks"]]
 
     books = {"binance_spot": lambda: binance("https://api.binance.com/api/v3/depth", 5000),
-             "coinbase_spot": coinbase,
-             "binance_perps": lambda: binance("https://fapi.binance.com/fapi/v1/depth", 1000)}
+             "coinbase_spot": coinbase}
     with ThreadPoolExecutor(len(books)) as ex:
         futs = {k: ex.submit(_safe, lambda fn=fn: _depth_summary(*fn())) for k, fn in books.items()}
     return {k: f.result() for k, f in futs.items()}
@@ -256,9 +311,20 @@ def daily_block(main, syms):
     return out
 
 
+def _timed(name, fn):
+    t = time.time()
+    try:
+        return _safe(fn)
+    finally:
+        TIMINGS[name] = round(time.time() - t, 1)
+
+
 def orderflow(asset="BTC", micro=True):
     asset = asset.upper()
+    TIMINGS.clear()
+    t = time.time()
     info = top_symbols(asset)
+    TIMINGS["pick_perp_markets"] = round(time.time() - t, 1)
     syms, main = info["symbols"], info["symbols"][0]
 
     ohlcv = _hist("/ohlcv-history", syms, "1hour", 170)
@@ -319,7 +385,7 @@ def orderflow(asset="BTC", micro=True):
         jobs.update(daily_trend=lambda: daily_block(main, syms), flow_5m_spot_vs_perps=lambda: flow_block(asset, syms),
                     order_book=lambda: book_block(asset))
     with ThreadPoolExecutor(len(jobs)) as ex:  # independent requests, so fetch them at the same time
-        futs = {k: ex.submit(_safe, fn) for k, fn in jobs.items()}
+        futs = {k: ex.submit(_timed, k, fn) for k, fn in jobs.items()}
     got = {k: f.result() for k, f in futs.items()}
 
     return {

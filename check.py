@@ -15,3 +15,5 @@ print("SUMMARY daily trend:", "unavailable: " + d["daily_trend"]["unavailable"] 
 for k, v in bk.items():
     print(f"SUMMARY book {k}:", "unavailable: " + v["unavailable"] if "unavailable" in v else "ok")
 print(f"SUMMARY fetched in {time.time() - t:.1f}s")
+print("SUMMARY slowest parts:", ", ".join(f"{k} {v}s" for k, v in sorted(data.TIMINGS.items(), key=lambda kv: -kv[1])))
+print("SUMMARY coinalyze:", data.STATS)
