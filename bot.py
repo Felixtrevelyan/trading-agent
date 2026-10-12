@@ -1,4 +1,6 @@
 import asyncio
+import html
+import re
 import datetime as dt
 import json
 import logging
@@ -8,6 +10,8 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)  # .env wins over stale shell variables
 from telegram import Update
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 import agents
@@ -58,9 +62,24 @@ async def run(question, assets=None):
     return answer
 
 
+def to_html(text):
+    """Reid marks bold as **text**; Telegram wants HTML."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(text, quote=False))
+
+
 async def send_long(send, text):
-    for i in range(0, len(text), 4000):
-        await send(text[i:i + 4000])
+    chunks, cur = [], ""
+    for line in text.splitlines(keepends=True):  # split on lines so bold markers are never cut in half
+        if cur and len(to_html(cur + line)) > 3800:  # Telegram's limit is 4096 after formatting
+            chunks.append(cur)
+            cur = ""
+        cur += line
+    chunks.append(cur)
+    for c in filter(str.strip, chunks):
+        try:
+            await send(to_html(c), parse_mode=ParseMode.HTML)
+        except BadRequest:  # formatting rejected: send it plain rather than lose it
+            await send(c.replace("**", ""))
 
 
 async def start(update: Update, ctx):
@@ -101,7 +120,7 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def daily(ctx: ContextTypes.DEFAULT_TYPE):
     try:
         text = await run(agents.DAILY_QUESTION, REPORT_ASSETS)
-        await send_long(lambda t: ctx.bot.send_message(OWNER, t), text)
+        await send_long(lambda t, **kw: ctx.bot.send_message(OWNER, t, **kw), text)
     except Exception as e:
         await ctx.bot.send_message(OWNER, f"Daily report failed: {e}")
 

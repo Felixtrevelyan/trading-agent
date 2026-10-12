@@ -244,6 +244,23 @@ def book_block(asset):
     return out
 
 
+def daily_block(main, syms):
+    """Longer-term picture from daily candles: 30/90-day trend, 90-day range, moving averages, 30-day OI change."""
+    h = next(s["history"] for s in _hist("/ohlcv-history", [main], "daily", 24 * 120) if s["symbol"] == main)
+    closes = [x["c"] for x in h]
+    if len(closes) < 31:
+        raise RuntimeError(f"only {len(closes)} daily candles returned")
+    price, ma = closes[-1], lambda n: round(sum(closes[-n:]) / n, 2) if len(closes) >= n else None
+    hi, lo = max(x["h"] for x in h[-90:]), min(x["l"] for x in h[-90:])
+    out = {"change_30d_pct": _pct(price, closes[-31]), "change_90d_pct": _pct(price, closes[-91]) if len(closes) > 90 else None,
+           "high_90d": hi, "low_90d": lo, "position_in_90d_range_pct": round((price - lo) / (hi - lo) * 100) if hi > lo else None,
+           "ma_20d": ma(20), "ma_50d": ma(50), "ma_100d": ma(100)}
+    oi = _agg(_hist("/open-interest-history", syms, "daily", 24 * 31, convert_to_usd="true"), "c")
+    if len(oi) >= 2:
+        out["open_interest_change_30d_pct"] = _pct(oi[-1][1], oi[0][1])
+    return out
+
+
 def orderflow(asset="BTC", micro=True):
     asset = asset.upper()
     info = top_symbols(asset)
@@ -311,7 +328,8 @@ def orderflow(asset="BTC", micro=True):
         **cvd, "price_vs_cvd_24h": divergence,
         "open_interest": _safe(oi_block), "funding": _safe(funding_block),
         "liquidations": _safe(liq_block),
-        **({"flow_5m_spot_vs_perps": _safe(lambda: flow_block(asset, syms)),
+        **({"daily_trend": _safe(lambda: daily_block(main, syms)),
+            "flow_5m_spot_vs_perps": _safe(lambda: flow_block(asset, syms)),
             "order_book": _safe(lambda: book_block(asset))} if micro else {}),
     }
 
