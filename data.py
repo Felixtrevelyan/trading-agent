@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -12,7 +12,23 @@ import requests
 BASE = "https://api.coinalyze.net/v1"
 STATS = {"coinalyze_calls": 0, "rate_limited": 0, "rate_limit_wait_s": 0.0}  # printed by check.py
 TIMINGS = {}  # seconds per data block on the last orderflow() call
-_slots = threading.Semaphore(4)  # at most 4 Coinalyze requests at once (limit is 40/min)
+_slots = threading.Semaphore(4)  # at most 4 Coinalyze requests at once
+_recent, _recent_lock = deque(), threading.Lock()
+PER_MINUTE = 35  # Coinalyze allows 40/min per key; stay under it rather than eat a ~60s penalty
+
+
+def _throttle():
+    """Wait for a free slot in the rolling 60s window instead of getting rate limited."""
+    while True:
+        with _recent_lock:
+            now = time.time()
+            while _recent and now - _recent[0] > 60:
+                _recent.popleft()
+            if len(_recent) < PER_MINUTE:
+                _recent.append(now)
+                return
+            wait = 60.5 - (now - _recent[0])
+        time.sleep(wait)
 
 
 def _get(path, **params):
@@ -20,13 +36,14 @@ def _get(path, **params):
     if not key:
         raise RuntimeError("COINALYZE_API_KEY not set")
     for _ in range(4):
+        _throttle()
         with _slots:
             STATS["coinalyze_calls"] += 1
             r = requests.get(BASE + path, params=params, headers={"api_key": key}, timeout=25)
         if r.status_code == 429:  # rate limit (40 calls/min)
             wait = min(float(r.headers.get("Retry-After", 5)), 65) + 0.5
             STATS["rate_limited"] += 1
-            STATS["rate_limit_wait_s"] += wait
+            STATS["rate_limit_wait_s"] = round(STATS["rate_limit_wait_s"] + wait, 1)
             logging.warning("Coinalyze rate limit on %s, waiting %.0fs", path, wait)
             time.sleep(wait)
             continue

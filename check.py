@@ -17,3 +17,6 @@ for k, v in bk.items():
 print(f"SUMMARY fetched in {time.time() - t:.1f}s")
 print("SUMMARY slowest parts:", ", ".join(f"{k} {v}s" for k, v in sorted(data.TIMINGS.items(), key=lambda kv: -kv[1])))
 print("SUMMARY coinalyze:", data.STATS)
+if data.STATS["rate_limited"]:
+    print("NOTE: rate limited means this key used its 40 calls/min elsewhere too (another check.py run or the bot "
+          "running at the same time). Wait a minute between runs, and don't run check.py while the bot is running.")
