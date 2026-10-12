@@ -336,7 +336,11 @@ def _timed(name, fn):
         TIMINGS[name] = round(time.time() - t, 1)
 
 
-def orderflow(asset="BTC", micro=True):
+ALL_PARTS = frozenset({"open_interest", "funding", "liquidations", "daily_trend", "flow_5m_spot_vs_perps", "order_book"})
+
+
+def orderflow(asset="BTC", parts=ALL_PARTS):
+    """Price, 72h range and hourly CVD always; plus only the extra data blocks named in `parts`."""
     asset = asset.upper()
     TIMINGS.clear()
     t = time.time()
@@ -397,11 +401,11 @@ def orderflow(asset="BTC", micro=True):
                 "last_24h_shorts_usd": L(sh, 24), "avg_hourly_7d_usd": round(sum(tot) / len(tot)),
                 "max_hour_7d_usd": round(max(tot))}
 
-    jobs = {"open_interest": oi_block, "funding": funding_block, "liquidations": liq_block}
-    if micro:
-        jobs.update(daily_trend=lambda: daily_block(main, syms), flow_5m_spot_vs_perps=lambda: flow_block(asset, syms),
-                    order_book=lambda: book_block(asset))
-    with ThreadPoolExecutor(len(jobs)) as ex:  # independent requests, so fetch them at the same time
+    jobs = {"open_interest": oi_block, "funding": funding_block, "liquidations": liq_block,
+            "daily_trend": lambda: daily_block(main, syms), "flow_5m_spot_vs_perps": lambda: flow_block(asset, syms),
+            "order_book": lambda: book_block(asset)}
+    jobs = {k: fn for k, fn in jobs.items() if k in parts}
+    with ThreadPoolExecutor(max(len(jobs), 1)) as ex:  # independent requests, so fetch them at the same time
         futs = {k: ex.submit(_timed, k, fn) for k, fn in jobs.items()}
     got = {k: f.result() for k, f in futs.items()}
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import os
 import anthropic
 
@@ -32,7 +33,7 @@ aggressive perps continue to long the grind down and aggressive spot continues t
 positioning into new lows. Good chance this passive wall gets eaten through unless this behaviour stabilises."""
 
 MAIN_PROMPT = f"""You are Reid, the lead trading assistant for a discretionary BTC trader. You get notes from an
-orderflow analyst plus the raw BTC data. Check the notes against the
+orderflow analyst (reports only) plus the raw BTC data. Check any notes against the
 raw data and give ONE decisive read. Never mention the analysts, never show disagreements or
 alternative readings, and do not hedge with "could be either".
 
@@ -63,12 +64,44 @@ def _ask(model, system, content, max_tokens=2500):
     return text
 
 
+# which data blocks a chat question needs, by keyword (free and instant; no model call)
+PART_WORDS = {
+    "flow_5m_spot_vs_perps": ["cvd", "flow", "spot", "perp", "aggress", "taker", "delta", "buying", "selling",
+                              "buyers", "sellers", "dump", "pump", "hold", "break", "support", "resistance"],
+    "order_book": ["book", "wall", "walls", "bid", "bids", "ask", "asks", "liquidity", "passive", "absorb", "spoof",
+                   "depth", "hold", "break", "support", "resistance"],
+    "open_interest": ["oi", "open interest", "positioning", "leverage", "squeeze", "new longs", "new shorts"],
+    "funding": ["funding", "crowded", "leverage", "squeeze", "overheated"],
+    "liquidations": ["liq", "liqs", "liquidat", "squeeze", "flush", "cascade", "wick", "stop hunt", "stops"],
+    "daily_trend": ["daily", "1d", "weekly", "week", "month", "ema", "sma", "moving average", "ma", "trend",
+                    "long term", "cycle", "ath", "high", "highs", "low", "lows", "target"],
+}
+# a trade question without specifics ("should I long here?") gets the short-term picture
+DEFAULT_PARTS = {"flow_5m_spot_vs_perps", "order_book", "open_interest", "funding", "liquidations"}
+
+
+def _has(q, w):
+    # short words must match whole ("oi" is not in "going"); longer ones may be a word start ("liquidat...")
+    return re.search(r"\b" + re.escape(w) + (r"\b" if len(w) <= 4 else ""), q) is not None
+
+
+def parts_for(question):
+    q = question.lower()
+    picked = {p for p, words in PART_WORDS.items() if any(_has(q, w) for w in words)}
+    if re.search(r"\b\d{2,3}(,\d{3}|k\b|\d{3}\b)", q):  # a price level like 75k / 75,000 -> longer-term context
+        picked.add("daily_trend")
+    return frozenset(picked or DEFAULT_PARTS)
+
+
 async def analyse(question, of_data, history=()):
     of_json = json.dumps(of_data, indent=1)
-    notes = await asyncio.to_thread(_ask, SUB_MODEL, ORDERFLOW_PROMPT, f"Data:\n{of_json}\n\nTrader question: {question}")
     convo = "\n".join(f"Trader: {q}\nYou: {a}" for q, a in history[-4:])
-    request = question if question == DAILY_QUESTION else f"{question}\n\n{CHAT_STYLE}"
-    final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {request}\n\n"
+    if question != DAILY_QUESTION:  # chat: one direct call on just the data the question needs
+        final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader question: {question}\n\n{CHAT_STYLE}\n\n"
+                 f"=== RAW DATA ===\n{of_json}")
+        return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 6000)
+    notes = await asyncio.to_thread(_ask, SUB_MODEL, ORDERFLOW_PROMPT, f"Data:\n{of_json}\n\nTrader question: {question}")
+    final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {question}\n\n"
              f"=== ORDERFLOW NOTES ===\n{notes}\n\n=== RAW DATA ===\n{of_json}")
     return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 8000)  # headroom: thinking counts toward max_tokens
 
@@ -105,6 +138,8 @@ DAILY_QUESTION = f"""Write the BTC market report in exactly this layout:
 
 Each bullet is one short sentence. {HORIZONS} Keep the whole report under 230 words."""
 
-CHAT_STYLE = ("Answer in under 170 words: 3-5 short bullet points (•) reading the tape in the style of the "
-              "examples, answering the question directly, the first one giving the price and whether it is at the "
-              f"range highs, lows or mid-range. Then a blank line and:\n{OUTLOOK_FORMAT}\n{HORIZONS}")
+CHAT_STYLE = """This is a chat question, not a report. Answer it directly in 3-5 short bullet points (•), under 120
+words, in the style of the examples. The first bullet answers the question (yes / no / how likely). Use only the
+data that matters for the question. Only the data relevant to the question was fetched, so do not mention or
+apologise for data that is not there (no "spot/book data unavailable" notes). No report headers, no outlook
+section, no bottom line."""

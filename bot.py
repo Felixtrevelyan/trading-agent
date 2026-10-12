@@ -36,8 +36,17 @@ async def cached(key, fn, ttl, *args):
     return v
 
 
+async def get_data(parts):
+    full = _cache.get("of-all")
+    if full and time.time() - full[0] < 120:  # a fresh /report already has everything
+        return full[1]
+    key = "of-all" if parts == data.ALL_PARTS else "of-" + ",".join(sorted(parts))
+    return await cached(key, data.orderflow, 120, "BTC", parts)
+
+
 async def run(question):
-    of = await cached("of-BTC", data.orderflow, 120, "BTC")
+    parts = data.ALL_PARTS if question == agents.DAILY_QUESTION else agents.parts_for(question)
+    of = await get_data(parts)
     answer = await agents.analyse(question, of, history)
     history.append((question, answer[:1500]))
     del history[:-8]
@@ -111,7 +120,7 @@ async def daily(ctx: ContextTypes.DEFAULT_TYPE):
 
 async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        d = await cached("ofa-BTC", data.orderflow, 120, "BTC", False)  # alerts skip book/spot calls
+        d = await get_data(frozenset({"open_interest", "funding", "liquidations"}))  # all the alerts need
     except Exception as e:
         logging.warning("alert fetch failed: %s", e)
         return
