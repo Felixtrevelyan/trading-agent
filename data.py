@@ -1,10 +1,10 @@
-"""Deterministic data layer (Coinalyze + yfinance + FRED). All numbers computed here, never by the LLM."""
+"""Deterministic BTC data layer (Coinalyze, plus Binance/Coinbase order books). All numbers computed here, never by the LLM."""
 import os
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
-import yfinance as yf
 
 BASE = "https://api.coinalyze.net/v1"
 
@@ -31,11 +31,6 @@ def _markets():
     if not m or time.time() - m[0] > 6 * 3600:
         m = _cache["_markets"] = (time.time(), _get("/future-markets"))
     return m[1]
-
-
-def base_assets():
-    """Every coin with a perpetual market on Coinalyze, e.g. {'BTC', 'ETH', ...}."""
-    return {m["base_asset"].upper() for m in _markets() if m.get("is_perpetual") and m.get("base_asset")}
 
 
 def top_symbols(asset, n=8):
@@ -236,12 +231,12 @@ def book_block(asset):
         d = _pub(f"https://api.exchange.coinbase.com/products/{asset}-USD/book", level=2)
         return [(float(x[0]), float(x[1])) for x in d["bids"]], [(float(x[0]), float(x[1])) for x in d["asks"]]
 
-    out = {}
-    for name, fn in (("binance_spot", lambda: binance("https://api.binance.com/api/v3/depth", 5000)),
-                     ("coinbase_spot", coinbase),
-                     ("binance_perps", lambda: binance("https://fapi.binance.com/fapi/v1/depth", 1000))):
-        out[name] = _safe(lambda fn=fn: _depth_summary(*fn()))
-    return out
+    books = {"binance_spot": lambda: binance("https://api.binance.com/api/v3/depth", 5000),
+             "coinbase_spot": coinbase,
+             "binance_perps": lambda: binance("https://fapi.binance.com/fapi/v1/depth", 1000)}
+    with ThreadPoolExecutor(len(books)) as ex:
+        futs = {k: ex.submit(_safe, lambda fn=fn: _depth_summary(*fn())) for k, fn in books.items()}
+    return {k: f.result() for k, f in futs.items()}
 
 
 def daily_block(main, syms):
@@ -319,6 +314,14 @@ def orderflow(asset="BTC", micro=True):
                 "last_24h_shorts_usd": L(sh, 24), "avg_hourly_7d_usd": round(sum(tot) / len(tot)),
                 "max_hour_7d_usd": round(max(tot))}
 
+    jobs = {"open_interest": oi_block, "funding": funding_block, "liquidations": liq_block}
+    if micro:
+        jobs.update(daily_trend=lambda: daily_block(main, syms), flow_5m_spot_vs_perps=lambda: flow_block(asset, syms),
+                    order_book=lambda: book_block(asset))
+    with ThreadPoolExecutor(len(jobs)) as ex:  # independent requests, so fetch them at the same time
+        futs = {k: ex.submit(_safe, fn) for k, fn in jobs.items()}
+    got = {k: f.result() for k, f in futs.items()}
+
     return {
         "asset": asset, "markets_used": syms, "price": price,
         "change_1h_pct": _pct(price, p1h), "change_24h_pct": ch24, "change_7d_pct": _pct(price, p7d),
@@ -326,15 +329,11 @@ def orderflow(asset="BTC", micro=True):
         "high_7d": max(x["h"] for x in h), "low_7d": min(x["l"] for x in h),
         "range": _safe(lambda: _range_block(h)),
         **cvd, "price_vs_cvd_24h": divergence,
-        "open_interest": _safe(oi_block), "funding": _safe(funding_block),
-        "liquidations": _safe(liq_block),
-        **({"daily_trend": _safe(lambda: daily_block(main, syms)),
-            "flow_5m_spot_vs_perps": _safe(lambda: flow_block(asset, syms)),
-            "order_book": _safe(lambda: book_block(asset))} if micro else {}),
+        **got,
     }
 
 
-FLOORS = {"BTC": (50e6, 2.5), "ETH": (25e6, 3.0)}  # (liquidation $ floor, 1h move %)
+FLOORS = {"BTC": (50e6, 2.5)}  # (liquidation $ floor, 1h move %)
 
 
 def detect_alerts(d):
@@ -354,44 +353,4 @@ def detect_alerts(d):
         out.append((f"{a}-oi", f"{a}: open interest {oi:+.1f}% in 4h."))
     if d.get("change_1h_pct") is not None and abs(d["change_1h_pct"]) >= move:
         out.append((f"{a}-move", f"{a}: price moved {d['change_1h_pct']:+.2f}% in 1h, now {d['price']:,.2f}."))
-    return out
-
-
-MACRO_TICKERS = {"DXY": "DX-Y.NYB", "US10Y_yield": "^TNX", "VIX": "^VIX", "SPX": "^GSPC",
-                 "NASDAQ": "^IXIC", "GOLD": "GC=F", "OIL_WTI": "CL=F"}
-
-
-# a 1-day move at least this big (in %) counts as macro worth mentioning
-MACRO_NOTABLE_1D = {"DXY": 0.7, "US10Y_yield": 2.5, "VIX": 15, "SPX": 1.5, "NASDAQ": 2.0, "GOLD": 2.5, "OIL_WTI": 4}
-
-
-def macro():
-    out = {}
-    for name, t in MACRO_TICKERS.items():
-        try:
-            c = yf.Ticker(t).history(period="1mo")["Close"].dropna()
-            out[name] = {"last": round(float(c.iloc[-1]), 2),
-                         "change_1d_pct": round((c.iloc[-1] / c.iloc[-2] - 1) * 100, 2),
-                         "change_1w_pct": round((c.iloc[-1] / c.iloc[-6] - 1) * 100, 2),
-                         "change_1m_pct": round((c.iloc[-1] / c.iloc[0] - 1) * 100, 2)}
-        except Exception as e:
-            out[name] = f"unavailable ({e.__class__.__name__})"
-    notable = []
-    for name, limit in MACRO_NOTABLE_1D.items():
-        v = out.get(name)
-        if isinstance(v, dict) and abs(v["change_1d_pct"]) >= limit:
-            notable.append(f"{name} {v['change_1d_pct']:+.2f}% today")
-    if isinstance(out.get("VIX"), dict) and out["VIX"]["last"] >= 25:
-        notable.append(f"VIX elevated at {out['VIX']['last']}")
-    out["notable"] = notable
-    key = os.getenv("FRED_API_KEY")
-    if key:
-        for name, sid in {"fed_funds_rate": "DFF", "yield_curve_10y2y": "T10Y2Y"}.items():
-            try:
-                r = requests.get("https://api.stlouisfed.org/fred/series/observations",
-                                 params={"series_id": sid, "api_key": key, "file_type": "json",
-                                         "sort_order": "desc", "limit": 1}, timeout=10).json()
-                out[name] = r["observations"][0]["value"]
-            except Exception:
-                out[name] = "unavailable"
     return out

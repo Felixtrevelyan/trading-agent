@@ -22,8 +22,6 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 OWNER = int(os.environ["OWNER_ID"])
-ALERT_ASSETS = [a.strip().upper() for a in os.getenv("ALERT_ASSETS", "BTC,ETH").split(",") if a.strip()]
-REPORT_ASSETS = [a.strip().upper() for a in os.getenv("REPORT_ASSETS", "BTC,ETH").split(",") if a.strip()]
 history = []          # [(question, answer)], single-user so one shared list
 _cache = {}           # short TTL cache so rapid follow-ups don't burn API calls
 last_alert = {}
@@ -38,27 +36,14 @@ async def cached(key, fn, ttl, *args):
     return v
 
 
-async def run(question, assets=None):
-    if not assets:
-        known = await cached("known", data.base_assets, 6 * 3600)
-        assets = [await agents.route(question, history, known)]
-    of = {}
-    for a in assets:  # sequential: Coinalyze allows 40 calls/min
-        try:
-            of[a] = await cached(f"of-{a}", data.orderflow, 120, a)
-        except ValueError:
-            if len(assets) == 1:
-                return f"I couldn't find perp markets for {a}."
-        except Exception as e:
-            logging.warning("orderflow fetch failed for %s: %s", a, e)
-            of[a] = {"unavailable": str(e)}
-    mc = await cached("macro", data.macro, 600)
-    answer = await agents.analyse(question, of, mc, history)
+async def run(question):
+    of = await cached("of-BTC", data.orderflow, 120, "BTC")
+    answer = await agents.analyse(question, of, history)
     history.append((question, answer[:1500]))
     del history[:-8]
     with open("ideas.jsonl", "a") as f:  # log so outcomes can be reviewed later
-        f.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), "assets": list(of), "q": question,
-                            "prices": {a: d.get("price") for a, d in of.items()}, "answer": answer}) + "\n")
+        f.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), "q": question,
+                            "price": of["price"], "answer": answer}) + "\n")
     return answer
 
 
@@ -85,7 +70,7 @@ async def send_long(send, text):
 async def start(update: Update, ctx):
     if update.effective_user.id == OWNER:
         await update.message.reply_text(
-            "Ready. Ask me anything (e.g. 'what do you think of ETH here?') or use /report [asset]. "
+            "Ready. Ask me anything about BTC (e.g. 'what do you think about longing here?') or use /report. "
             "/reset clears conversation memory. Alerts run automatically.")
 
 
@@ -98,10 +83,9 @@ async def reset(update: Update, ctx):
 async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER:
         return
-    assets = [a.upper() for a in ctx.args] or REPORT_ASSETS
-    await update.message.reply_text(f"Gathering {', '.join(assets)} data...")
+    await update.message.reply_text("Gathering BTC data...")
     try:
-        await send_long(update.message.reply_text, await run(agents.DAILY_QUESTION, assets))
+        await send_long(update.message.reply_text, await run(agents.DAILY_QUESTION))
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
@@ -119,25 +103,24 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def daily(ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        text = await run(agents.DAILY_QUESTION, REPORT_ASSETS)
+        text = await run(agents.DAILY_QUESTION)
         await send_long(lambda t, **kw: ctx.bot.send_message(OWNER, t, **kw), text)
     except Exception as e:
         await ctx.bot.send_message(OWNER, f"Daily report failed: {e}")
 
 
 async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
-    for asset in ALERT_ASSETS:
-        try:
-            d = await cached(f"ofa-{asset}", data.orderflow, 120, asset, False)  # alerts skip book/spot calls
-        except Exception as e:
-            logging.warning("alert fetch failed for %s: %s", asset, e)
-            continue
-        for key, msg in data.detect_alerts(d):
-            if time.time() - last_alert.get(key, 0) > 2 * 3600:  # 2h cooldown per alert type
-                last_alert[key] = time.time()
-                history.append((f"[alert sent to trader] {msg}", ""))  # so a reply like "what do you make of it?" has context
-                del history[:-8]
-                await ctx.bot.send_message(OWNER, f"ALERT: {msg}\nReply to ask what I make of it.")
+    try:
+        d = await cached("ofa-BTC", data.orderflow, 120, "BTC", False)  # alerts skip book/spot calls
+    except Exception as e:
+        logging.warning("alert fetch failed: %s", e)
+        return
+    for key, msg in data.detect_alerts(d):
+        if time.time() - last_alert.get(key, 0) > 2 * 3600:  # 2h cooldown per alert type
+            last_alert[key] = time.time()
+            history.append((f"[alert sent to trader] {msg}", ""))  # so a reply like "what do you make of it?" has context
+            del history[:-8]
+            await ctx.bot.send_message(OWNER, f"ALERT: {msg}\nReply to ask what I make of it.")
 
 
 def main():

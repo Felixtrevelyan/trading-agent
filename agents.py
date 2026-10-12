@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import re
 import anthropic
 
 client = anthropic.Anthropic()
@@ -12,7 +11,7 @@ RULES = ("Use ONLY the numbers in the data provided. Never invent or recall mark
          "If a data section says 'unavailable', say so rather than guessing. "
          "Funding values are already in percent per funding interval (0.01 means 0.01%, a normal level).")
 
-ORDERFLOW_PROMPT = f"""You are an orderflow analyst for a discretionary crypto trader. For each asset, read
+ORDERFLOW_PROMPT = f"""You are an orderflow analyst for a discretionary BTC trader. Read
 the data as a story of who is aggressive and who is passive:
 - Structure: the 72h range, where price sits in it, how many times the edges have been touched, sweeps and
   failed breakouts. Repeated touches of an edge weaken it; a sweep that closes back inside often reverts.
@@ -21,11 +20,8 @@ the data as a story of who is aggressive and who is passive:
 - Passive liquidity: bid vs ask depth near price on the spot books (Binance, Coinbase) and perps, and the
   largest walls. Note which side is heavier and whether aggressive flow is eating into a wall.
 - Positioning: open interest change with price (new positions vs squeeze/closing), funding, liquidations.
-Give one directional call per asset with the most likely next move (a price from the data), and what would
+Give one directional call with the most likely next move (a price from the data), and what would
 prove it wrong. {RULES}"""
-
-MACRO_PROMPT = f"""You are a macro analyst for a crypto trader. Only the moves flagged as notable matter.
-In 1-2 sentences say what happened and whether it helps or hurts crypto today. {RULES}"""
 
 STYLE_EXAMPLES = """Example 1: BTC is ranging and is trading towards range high for the 3rd time. Short squeeze takes out
 the range high into a stacked passive spot book skewed towards the ask side and aggressive perps start buying
@@ -35,9 +31,9 @@ Example 2: BTC is pulling back into an area where the passive spot book is skewe
 aggressive perps continue to long the grind down and aggressive spot continues to sell, unwinding that
 positioning into new lows. Good chance this passive wall gets eaten through unless this behaviour stabilises."""
 
-MAIN_PROMPT = f"""You are the lead trading assistant for a discretionary crypto trader. You get notes from an
-orderflow analyst (and a macro analyst only when macro matters), plus the raw data. Check the notes against the
-raw data and give ONE decisive read per asset. Never mention the analysts, never show disagreements or
+MAIN_PROMPT = f"""You are Reid, the lead trading assistant for a discretionary BTC trader. You get notes from an
+orderflow analyst plus the raw BTC data. Check the notes against the
+raw data and give ONE decisive read. Never mention the analysts, never show disagreements or
 alternative readings, and do not hedge with "could be either".
 
 Write like an experienced orderflow trader describing the tape, in the style of these examples (style only,
@@ -67,42 +63,13 @@ def _ask(model, system, content, max_tokens=2500):
     return text
 
 
-NAMES = {"BITCOIN": "BTC", "ETHEREUM": "ETH", "ETHER": "ETH", "SOLANA": "SOL", "RIPPLE": "XRP",
-         "DOGECOIN": "DOGE", "CARDANO": "ADA", "AVALANCHE": "AVAX"}
-# tickers that are never ordinary words, so they match in any case ("btc", "Eth")
-ANY_CASE = {"BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "AVAX", "BNB", "SUI", "TRX", "LTC", "PEPE"}
-
-
-async def route(question, history, known):
-    """Which coin is the user asking about? Only ever returns a coin in `known`; defaults to BTC."""
-    for w in re.findall(r"[A-Za-z0-9]+", question):
-        up = w.upper()
-        t = NAMES.get(up) or (up if up in ANY_CASE or w.isupper() else None)  # other tickers only in CAPS
-        if t in known and len(t) >= 2:
-            return t
-    ctx = "\n".join(f"User: {q}" for q, _ in history[-2:])
-    out = await asyncio.to_thread(
-        _ask, SUB_MODEL, "Reply with ONLY the uppercase ticker (e.g. BTC, ETH, SOL) of the crypto asset the "
-        "latest user message is about, using prior messages for context. If none is specified reply BTC.",
-        f"{ctx}\nUser: {question}", 20)
-    out = out.strip().upper()
-    return out if out in known else "BTC"  # anything but a bare known ticker (e.g. "I DON'T...") -> BTC
-
-
-async def analyse(question, of_data, macro_data, history=()):
+async def analyse(question, of_data, history=()):
     of_json = json.dumps(of_data, indent=1)
-    jobs = [asyncio.to_thread(_ask, SUB_MODEL, ORDERFLOW_PROMPT, f"Data:\n{of_json}\n\nTrader question: {question}")]
-    notable = macro_data.get("notable")
-    if notable:  # macro rarely matters; only bring it in on a notable move
-        macro_json = json.dumps(macro_data, indent=1)
-        jobs.append(asyncio.to_thread(_ask, SUB_MODEL, MACRO_PROMPT, f"Data:\n{macro_json}"))
-    reps = await asyncio.gather(*jobs)
-    macro_note = reps[1] if notable else "Nothing notable in macro today. Do not mention macro."
+    notes = await asyncio.to_thread(_ask, SUB_MODEL, ORDERFLOW_PROMPT, f"Data:\n{of_json}\n\nTrader question: {question}")
     convo = "\n".join(f"Trader: {q}\nYou: {a}" for q, a in history[-4:])
     request = question if question == DAILY_QUESTION else f"{question}\n\n{CHAT_STYLE}"
     final = (f"Recent conversation:\n{convo or '(none)'}\n\nTrader request: {request}\n\n"
-             f"=== ORDERFLOW NOTES ===\n{reps[0]}\n\n=== MACRO NOTES ===\n{macro_note}\n\n"
-             f"=== RAW DATA ===\n{of_json}" + (f"\n{macro_json}" if notable else ""))
+             f"=== ORDERFLOW NOTES ===\n{notes}\n\n=== RAW DATA ===\n{of_json}")
     return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 8000)  # headroom: thinking counts toward max_tokens
 
 
@@ -119,11 +86,11 @@ daily_trend data (30/90-day change, 90-day range, 20/50/100-day averages, 30-day
 is unavailable, say Neutral for long term. Say Neutral for any horizon with no edge. The horizons can disagree
 (e.g. a short-term bounce inside a longer downtrend); that is fine."""
 
-DAILY_QUESTION = f"""Write the market report for every asset in the data, BTC first, in exactly this layout:
+DAILY_QUESTION = f"""Write the BTC market report in exactly this layout:
 
 📊 **MARKET REPORT**
 
-**ASSET $price**  📈 or 📉 24h change%
+**BTC $price**  📈 or 📉 24h change%
 • **Price:** $price, at the **range highs**, **range lows** or **mid-range** (say which, nothing else).
 • **Flow:** who is aggressive, spot vs perps.
 • **Book:** which side the passive book is heavier on, and any big wall.
@@ -133,13 +100,10 @@ DAILY_QUESTION = f"""Write the market report for every asset in the data, BTC fi
 {OUTLOOK_FORMAT}
 
 ━━━━━━━━━━━━
-(repeat the asset block for each asset, separated by that line)
-
-🌍 **MACRO:** one or two sentences. Include this line ONLY if the macro notes say something notable happened.
 
 🎯 **BOTTOM LINE:** one or two sentences, including trade or no trade.
 
-Each bullet is one short sentence. {HORIZONS} Keep the whole report under 350 words."""
+Each bullet is one short sentence. {HORIZONS} Keep the whole report under 230 words."""
 
 CHAT_STYLE = ("Answer in under 170 words: 3-5 short bullet points (•) reading the tape in the style of the "
               "examples, answering the question directly, the first one giving the price and whether it is at the "
