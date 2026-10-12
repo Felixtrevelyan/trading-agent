@@ -46,7 +46,7 @@ their facts are not current):
 
 That means: describe the structure (range, edges, sweeps), who is aggressive (spot vs perps), where passive
 liquidity sits and which side it is skewed to, what positioning is doing (open interest, funding,
-liquidations), then the conclusion and how likely it is. Only claim what the data shows: the flow data is
+liquidations), then the conclusion and how likely it is, as short bullet points starting with •. Only claim what the data shows: the flow data is
 5-minute and hourly, so never mention 1-minute behaviour; if spot or order book data is unavailable, say the
 read is based on perps only. Do not use chart patterns (order blocks, fair value gaps), long/short ratios,
 sentiment indexes or a key-levels list.
@@ -104,20 +104,36 @@ async def analyse(question, of_data, macro_data, history=()):
     return await asyncio.to_thread(_ask, MAIN_MODEL, MAIN_PROMPT, final, 8000)  # headroom: thinking counts toward max_tokens
 
 
-DAILY_QUESTION = """Write the market report for every asset in the data, BTC first, in exactly this layout:
+OUTLOOK_FORMAT = """Outlook:
+• Short term (15m-4h): [Bullish/Bearish/Neutral]. Likely move to $[price]. Wrong if [condition].
+• Mid term (4h-1d): [Bullish/Bearish/Neutral]. Likely move to $[price]. Wrong if [condition].
+• Long term (1d-1w): [Bullish/Bearish/Neutral]. Likely move to $[price]. Wrong if [condition]."""
+
+HORIZONS = """Base each horizon on the data that fits it: short term on the 5-minute spot vs perp flow, the order
+book and where price sits at the range edge; mid term on the hourly CVD, open interest, funding, liquidations
+and the 72h range; long term on the 7-day trend, 7-day CVD and how positioning has built up. The data only
+covers 7 days, so keep the long-term call modest, and say Neutral for any horizon where there is no edge.
+The horizons can disagree (e.g. a short-term bounce inside a mid-term downtrend); that is fine."""
+
+DAILY_QUESTION = f"""Write the market report for every asset in the data, BTC first, in exactly this layout:
 
 MARKET REPORT
 
 [ASSET] $[price] ([24h change]% 24h)
-[One paragraph of 3-5 sentences reading the tape, in the style of the examples.]
-Outlook: Bullish, Bearish or Neutral. Likely move to $[price from the data]. Wrong if [condition].
+• [Structure: range, edges, touches, sweeps]
+• [Aggressive flow: spot vs perps]
+• [Passive book: which side is heavier, walls]
+• [Positioning: open interest, funding, liquidations]
+• [Read: what this adds up to and how likely, in the style of the examples]
+{OUTLOOK_FORMAT}
 
 (repeat for each asset)
 
 MACRO: [one or two sentences. Include this line ONLY if the macro notes say something notable happened.]
 
 BOTTOM LINE: [one or two sentences, including trade or no trade.]
-Keep the whole report under 250 words."""
 
-CHAT_STYLE = ("Answer in under 150 words as one short paragraph reading the tape in the style of the examples, "
-              "then a final line: Outlook: [bias]. Likely move to $[price]. Wrong if [condition].")
+Each bullet is one short sentence. {HORIZONS} Keep the whole report under 330 words."""
+
+CHAT_STYLE = ("Answer in under 170 words: 3-5 short bullet points (•) reading the tape in the style of the "
+              f"examples, answering the question directly, then:\n{OUTLOOK_FORMAT}\n{HORIZONS}")
