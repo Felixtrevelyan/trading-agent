@@ -56,12 +56,19 @@ async def run(question):
     return answer
 
 
+def space_bullets(text):
+    """A blank line between bullet / outlook lines so they are easier to read on a phone."""
+    text = re.sub(r"\n(?=\s*(?:•|🟢|🔴|⚪))", "\n\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
 def to_html(text):
     """Reid marks bold as **text**; Telegram wants HTML."""
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(text, quote=False))
 
 
 async def send_long(send, text):
+    text = space_bullets(text)
     chunks, cur = [], ""
     for line in text.splitlines(keepends=True):  # split on lines so bold markers are never cut in half
         if cur and len(to_html(cur + line)) > 3800:  # Telegram's limit is 4096 after formatting
