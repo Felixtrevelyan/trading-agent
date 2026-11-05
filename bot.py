@@ -80,7 +80,7 @@ async def start(update: Update, ctx):
     if update.effective_user.id == OWNER:
         await update.message.reply_text(
             "Ready. Ask me anything about BTC (e.g. 'what do you think about longing here?') or use /report. "
-            "/reset clears conversation memory. Alerts run automatically.")
+            "/reset clears conversation memory. Liquidation-spike alerts run automatically.")
 
 
 async def reset(update: Update, ctx):
@@ -120,7 +120,7 @@ async def daily(ctx: ContextTypes.DEFAULT_TYPE):
 
 async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        d = await get_data(frozenset({"open_interest", "funding", "liquidations"}))  # all the alerts need
+        d = await get_data(frozenset({"liquidations"}))  # alerts are liquidation spikes only
     except Exception as e:
         logging.warning("alert fetch failed: %s", e)
         return

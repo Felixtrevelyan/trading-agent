@@ -117,14 +117,21 @@ perp flow, the order book, the range edge and the last hours of CVD and liquidat
 on hourly CVD, open interest, funding, the 72h range and the 7-day highs/lows; long term (1 week+) on the
 daily_trend data (30/90-day change, 90-day range, 20/50/100-day averages, 30-day open interest). If daily_trend
 is unavailable, say Neutral for long term. Say Neutral for any horizon with no edge. The horizons can disagree
-(e.g. a short-term bounce inside a longer downtrend); that is fine."""
+(e.g. a short-term bounce inside a longer downtrend); that is fine.
+
+Size each target to its horizon using daily_trend.typical_range_pct (how far BTC usually travels in a day, a
+week and a month): the short-term target should sit roughly half to one typical 1-day range from price, the
+mid-term target roughly half to one typical 1-week range, and the long-term target roughly half to one typical
+1-month range. Each target must be further from price than the one before, and the long-term target must never
+be within 3% of price. Anchor each target on a real level from the data near that distance (range edges, 24h/7d
+or 90-day highs and lows, moving averages); only if there is none, use the distance itself. For a Neutral
+horizon give a range of about that size ("chop between $X and $Y") instead of one target."""
 
 DAILY_QUESTION = f"""Write the BTC market report in exactly this layout:
 
 📊 **MARKET REPORT**
 
 **BTC $price**  📈 or 📉 24h change%
-• **Price:** $price, at the **range highs**, **range lows** or **mid-range** (say which, nothing else).
 • **Flow:** who is aggressive, spot vs perps.
 • **Book:** which side the passive book is heavier on, and any big wall.
 • **Positioning:** open interest, funding, liquidations.

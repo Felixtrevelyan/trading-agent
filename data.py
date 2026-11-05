@@ -322,6 +322,14 @@ def daily_block(main, syms):
     out = {"change_30d_pct": _pct(price, closes[-31]), "change_90d_pct": _pct(price, closes[-91]) if len(closes) > 90 else None,
            "high_90d": hi, "low_90d": lo, "position_in_90d_range_pct": round((price - lo) / (hi - lo) * 100) if hi > lo else None,
            "ma_20d": ma(20), "ma_50d": ma(50), "ma_100d": ma(100)}
+    def typical_range(days, lookback=90):
+        """Average high-to-low range of a rolling `days`-long window, as % of price, over the last `lookback` days."""
+        w = h[-lookback:]
+        spans = [(max(x["h"] for x in w[i:i + days]) - min(x["l"] for x in w[i:i + days])) / w[i]["o"] * 100
+                 for i in range(0, len(w) - days + 1)]
+        return round(sum(spans) / len(spans), 2) if spans else None
+
+    out["typical_range_pct"] = {"1_day": typical_range(1, 30), "1_week": typical_range(7), "1_month": typical_range(30, 120)}
     oi = _agg(_hist("/open-interest-history", syms, "daily", 24 * 31, convert_to_usd="true"), "c")
     if len(oi) >= 2:
         out["open_interest_change_30d_pct"] = _pct(oi[-1][1], oi[0][1])
@@ -420,24 +428,14 @@ def orderflow(asset="BTC", parts=ALL_PARTS):
     }
 
 
-FLOORS = {"BTC": (50e6, 2.5)}  # (liquidation $ floor, 1h move %)
+LIQ_FLOOR_USD = 50e6  # an hour must liquidate at least this much to count as a spike
 
 
 def detect_alerts(d):
-    """Returns [(key, message)] for notable conditions."""
-    a, out = d["asset"], []
-    floor, move = FLOORS.get(a, (5e6, 4.0))
+    """BTC liquidation spikes only: [(key, message)]."""
     lq = d.get("liquidations", {})
-    if "last_1h_total_usd" in lq and lq["last_1h_total_usd"] >= max(floor, 4 * lq["avg_hourly_7d_usd"]):
-        out.append((f"{a}-liq", f"{a}: liquidation spike. ${lq['last_1h_total_usd']/1e6:.0f}M in 1h "
-                    f"(longs ${lq['last_1h_longs_liquidated_usd']/1e6:.0f}M / shorts ${lq['last_1h_shorts_liquidated_usd']/1e6:.0f}M), "
-                    f"7d hourly avg ${lq['avg_hourly_7d_usd']/1e6:.0f}M."))
-    f = d.get("funding", {}).get("oi_weighted_current_pct")
-    if f is not None and abs(f) >= 0.05:
-        out.append((f"{a}-funding", f"{a}: extreme funding {f:+.3f}% (OI-weighted)."))
-    oi = d.get("open_interest", {}).get("change_4h_pct")
-    if oi is not None and abs(oi) >= 5:
-        out.append((f"{a}-oi", f"{a}: open interest {oi:+.1f}% in 4h."))
-    if d.get("change_1h_pct") is not None and abs(d["change_1h_pct"]) >= move:
-        out.append((f"{a}-move", f"{a}: price moved {d['change_1h_pct']:+.2f}% in 1h, now {d['price']:,.2f}."))
-    return out
+    if "last_1h_total_usd" not in lq or lq["last_1h_total_usd"] < max(LIQ_FLOOR_USD, 4 * lq["avg_hourly_7d_usd"]):
+        return []
+    return [("BTC-liq", f"BTC liquidation spike: ${lq['last_1h_total_usd']/1e6:.0f}M in 1h "
+                        f"(longs ${lq['last_1h_longs_liquidated_usd']/1e6:.0f}M / shorts ${lq['last_1h_shorts_liquidated_usd']/1e6:.0f}M), "
+                        f"vs a 7d hourly average of ${lq['avg_hourly_7d_usd']/1e6:.0f}M.")]
