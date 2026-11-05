@@ -404,7 +404,7 @@ def orderflow(asset="BTC", parts=ALL_PARTS):
         ts_ = sorted(set(lo) | set(sh))
         tot = [lo.get(t, 0) + sh.get(t, 0) for t in ts_]
         L = lambda d, n: round(sum(d.get(t, 0) for t in ts_[-n:]))
-        return {"last_1h_total_usd": round(tot[-1]), "last_1h_longs_liquidated_usd": L(lo, 1),
+        return {"last_1h_hour_ts": ts_[-1], "last_1h_total_usd": round(tot[-1]), "last_1h_longs_liquidated_usd": L(lo, 1),
                 "last_1h_shorts_liquidated_usd": L(sh, 1), "last_24h_longs_usd": L(lo, 24),
                 "last_24h_shorts_usd": L(sh, 24), "avg_hourly_7d_usd": round(sum(tot) / len(tot)),
                 "max_hour_7d_usd": round(max(tot))}
@@ -432,10 +432,14 @@ LIQ_FLOOR_USD = 50e6  # an hour must liquidate at least this much to count as a 
 
 
 def detect_alerts(d):
-    """BTC liquidation spikes only: [(key, message)]."""
+    """BTC liquidation spikes only: [(key, message)]. The key names the hour the spike happened in, so each
+    spike is alerted once; spikes older than 2 hours are ignored (they are not news any more)."""
     lq = d.get("liquidations", {})
     if "last_1h_total_usd" not in lq or lq["last_1h_total_usd"] < max(LIQ_FLOOR_USD, 4 * lq["avg_hourly_7d_usd"]):
         return []
-    return [("BTC-liq", f"BTC liquidation spike: ${lq['last_1h_total_usd']/1e6:.0f}M in 1h "
-                        f"(longs ${lq['last_1h_longs_liquidated_usd']/1e6:.0f}M / shorts ${lq['last_1h_shorts_liquidated_usd']/1e6:.0f}M), "
-                        f"vs a 7d hourly average of ${lq['avg_hourly_7d_usd']/1e6:.0f}M.")]
+    hour = lq.get("last_1h_hour_ts")
+    if hour is not None and time.time() - hour > 2 * 3600:
+        return []
+    return [(f"BTC-liq-{hour}", f"BTC liquidation spike: ${lq['last_1h_total_usd']/1e6:.0f}M in 1h "
+                                f"(longs ${lq['last_1h_longs_liquidated_usd']/1e6:.0f}M / shorts ${lq['last_1h_shorts_liquidated_usd']/1e6:.0f}M), "
+                                f"vs a 7d hourly average of ${lq['avg_hourly_7d_usd']/1e6:.0f}M.")]

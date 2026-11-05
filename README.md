@@ -8,7 +8,7 @@
 5. `python bot.py` (use tmux/systemd on a VPS so it stays up). Restart it after any change to `.env`.
 
 Telegram: `/report` for the BTC report, `/reset`, or just talk to it. BTC liquidation-spike alerts check every
-10 min with a 2h cooldown. Daily report at DAILY_REPORT_UTC.
+10 min; each spike is alerted once, even across restarts. Daily report at DAILY_REPORT_UTC.
 
 Data: Coinalyze (price, perp and spot CVD, open interest, funding, liquidations, daily trend) plus the public
 Binance and Coinbase order books. Binance blocks US servers, so host the bot in the UK/EU.

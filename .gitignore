@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 ideas.jsonl
 .market_cache.json
+.alerts_sent.json

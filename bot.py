@@ -24,7 +24,18 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 OWNER = int(os.environ["OWNER_ID"])
 history = []          # [(question, answer)], single-user so one shared list
 _cache = {}           # short TTL cache so rapid follow-ups don't burn API calls
-last_alert = {}
+ALERTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".alerts_sent.json")
+
+
+def _load_sent():
+    try:
+        with open(ALERTS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+sent_alerts = _load_sent()  # alert key -> time sent; saved to disk so a restart never repeats an alert
 
 
 async def cached(key, fn, ttl, *args):
@@ -132,11 +143,19 @@ async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
         logging.warning("alert fetch failed: %s", e)
         return
     for key, msg in data.detect_alerts(d):
-        if time.time() - last_alert.get(key, 0) > 2 * 3600:  # 2h cooldown per alert type
-            last_alert[key] = time.time()
-            history.append((f"[alert sent to trader] {msg}", ""))  # so a reply like "what do you make of it?" has context
-            del history[:-8]
-            await ctx.bot.send_message(OWNER, f"ALERT: {msg}\nReply to ask what I make of it.")
+        if key in sent_alerts:  # this spike was already alerted
+            continue
+        sent_alerts[key] = time.time()
+        for k in [k for k, t in sent_alerts.items() if time.time() - t > 3 * 86400]:
+            del sent_alerts[k]
+        try:
+            with open(ALERTS_FILE, "w") as f:
+                json.dump(sent_alerts, f)
+        except OSError:
+            pass
+        history.append((f"[alert sent to trader] {msg}", ""))  # so a reply like "what do you make of it?" has context
+        del history[:-8]
+        await ctx.bot.send_message(OWNER, f"🚨 ALERT: {msg}\nReply to ask what I make of it.")
 
 
 def main():
