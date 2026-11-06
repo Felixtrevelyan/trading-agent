@@ -16,7 +16,8 @@ Confluence alerts (`confluence.py`, from the BTC Flow Desk research) check every
 - **HTF bottom:** on the daily close, all five of: 200-day average rising, price 8%+ below the 50-day average,
   RSI(14) <= 38, 7 days of net taker selling, and OI down 8%+ over 30 days. A multi-week swing long; re-alerted at most every 30 days.
 
-`/confluence` shows the current reading of all of them.
+`/confluence` shows the current reading of all of them. `python tests/test_confluence.py` replays recorded history through
+the module offline and checks it still matches the backtest.
 
 Data: Coinalyze (price, perp and spot CVD, open interest, funding, liquidations, daily trend) plus the public
 Binance and Coinbase order books. Binance blocks US servers, so host the bot in the UK/EU.
