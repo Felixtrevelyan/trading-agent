@@ -15,6 +15,7 @@ from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 import agents
+import confluence
 import data
 
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +99,8 @@ async def start(update: Update, ctx):
     if update.effective_user.id == OWNER:
         await update.message.reply_text(
             "Ready. Ask me anything about BTC (e.g. 'what do you think about longing here?') or use /report. "
-            "/reset clears conversation memory. Liquidation-spike alerts run automatically.")
+            "/reset clears conversation memory. /confluence shows the confluence indicators. "
+            "Liquidation-spike and confluence alerts run automatically.")
 
 
 async def reset(update: Update, ctx):
@@ -136,6 +138,40 @@ async def daily(ctx: ContextTypes.DEFAULT_TYPE):
         await ctx.bot.send_message(OWNER, f"Daily report failed: {e}")
 
 
+async def confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER:
+        return
+    try:
+        await update.message.reply_text(await asyncio.to_thread(confluence.status))
+    except Exception as e:
+        await update.message.reply_text(f"Confluence data failed: {e}")
+
+
+def remember_alert(key):
+    sent_alerts[key] = time.time()
+    # confluence keys stay 31 days so the HTF bottom's 30-day cooldown holds across restarts
+    for k in [k for k, t in sent_alerts.items() if time.time() - t > (31 if k.startswith("confluence-") else 3) * 86400]:
+        del sent_alerts[k]
+    try:
+        with open(ALERTS_FILE, "w") as f:
+            json.dump(sent_alerts, f)
+    except OSError:
+        pass
+
+
+async def confluence_alerts(ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        found = await asyncio.to_thread(confluence.detect_alerts, sent_alerts)
+    except Exception as e:
+        logging.warning("confluence alert fetch failed: %s", e)
+        return
+    for key, msg in found:
+        remember_alert(key)
+        history.append((f"[alert sent to trader] {msg}", ""))
+        del history[:-8]
+        await ctx.bot.send_message(OWNER, f"📈 CONFLUENCE: {msg}\nReply to ask what I make of it.")
+
+
 async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
     try:
         d = await get_data(frozenset({"liquidations"}))  # alerts are liquidation spikes only
@@ -145,14 +181,7 @@ async def alerts(ctx: ContextTypes.DEFAULT_TYPE):
     for key, msg in data.detect_alerts(d):
         if key in sent_alerts:  # this spike was already alerted
             continue
-        sent_alerts[key] = time.time()
-        for k in [k for k, t in sent_alerts.items() if time.time() - t > 3 * 86400]:
-            del sent_alerts[k]
-        try:
-            with open(ALERTS_FILE, "w") as f:
-                json.dump(sent_alerts, f)
-        except OSError:
-            pass
+        remember_alert(key)
         history.append((f"[alert sent to trader] {msg}", ""))  # so a reply like "what do you make of it?" has context
         del history[:-8]
         await ctx.bot.send_message(OWNER, f"🚨 ALERT: {msg}\nReply to ask what I make of it.")
@@ -163,10 +192,12 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("confluence", confluence_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     h, m = os.getenv("DAILY_REPORT_UTC", "07:00").split(":")
     app.job_queue.run_daily(daily, time=dt.time(int(h), int(m), tzinfo=dt.timezone.utc))
     app.job_queue.run_repeating(alerts, interval=600, first=30)
+    app.job_queue.run_repeating(confluence_alerts, interval=900, first=60)  # setups are judged on closed hours and days
     app.run_polling()
 
 
