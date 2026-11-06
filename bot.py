@@ -169,7 +169,7 @@ async def confluence_alerts(ctx: ContextTypes.DEFAULT_TYPE):
         remember_alert(key)
         history.append((f"[alert sent to trader] {msg}", ""))
         del history[:-8]
-        await ctx.bot.send_message(OWNER, f"📈 CONFLUENCE: {msg}\nReply to ask what I make of it.")
+        await ctx.bot.send_message(OWNER, f"📈 CONFLUENCE: {msg}")
 
 
 async def alerts(ctx: ContextTypes.DEFAULT_TYPE):

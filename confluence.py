@@ -133,16 +133,13 @@ def detect_alerts(sent, now_ms=None):
                     f"{head}\nBTC {s['price']:,.0f}{' (at a 24h low)' if s['at_24h_low'] else ''}\n"
                     f"DVOL {s['dvol']:.1f} ({s['dvol_chg24']:+.1f} pts in 24h)\n"
                     f"OI {s['oi_chg24'] * 100:+.1f}% in 24h\n"
-                    f"Funding {s['funding_8h'] * 3 * 365 * 100:+.1f}% a year{' (shorts paying)' if s['shorts'] else ''}\n"
-                    + ("Backtest: +221 bp over 72h on average, 23 signals. Rare and noisy."
-                       if kind == "all3" else "Backtest: +67 bp over 24h, +136 bp over 72h, positive every year; 55% of trades up.")))
+                    f"Funding {s['funding_8h'] * 3 * 365 * 100:+.1f}% a year{' (shorts paying)' if s['shorts'] else ''}"))
     h = htf(now_ms)
     if h and h["on"] and not _recent(sent, "htf", now_s):
         day = time.strftime("%Y-%m-%d", time.gmtime(h["day"] / 1000))
         out.append((f"confluence-htf-{h['day']}",
                     f"HIGHER TIMEFRAME BOTTOM: all five conditions met on the {day} daily close. Multi-week swing long setup.\n"
-                    f"BTC {h['close']:,.0f}\n" + "\n".join(f"✓ {txt}" for _, txt in h["cond"].values()) +
-                    "\nBacktest 2023-25: +16% over 8 weeks on average vs +11% buying any day. Fails in bear markets."))
+                    f"BTC {h['close']:,.0f}\n" + "\n".join(f"✓ {txt}" for _, txt in h["cond"].values())))
     return out
 
 
