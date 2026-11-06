@@ -117,7 +117,11 @@ perp flow, the order book, the range edge and the last hours of CVD and liquidat
 on hourly CVD, open interest, funding, the 72h range and the 7-day highs/lows; long term (1 week+) on the
 daily_trend data (30/90-day change, 90-day range, 20/50/100-day averages, 30-day open interest). If daily_trend
 is unavailable, say Neutral for long term. Say Neutral for any horizon with no edge. The horizons can disagree
-(e.g. a short-term bounce inside a longer downtrend); that is fine."""
+(e.g. a short-term bounce inside a longer downtrend); that is fine.
+Match each target to its timeframe where the data supports it: short term to the 72h range edges and 24h
+highs/lows; mid term to the 7-day highs/lows; long term to the 90-day highs/lows and the 20/50/100-day averages.
+So longer horizons usually aim further away than shorter ones; a long-term target should not sit right next to
+the current price unless the data clearly points there."""
 
 DAILY_QUESTION = f"""Write the BTC market report in exactly this layout:
 
