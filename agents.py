@@ -110,24 +110,14 @@ OUTLOOK_FORMAT = """🔭 **Outlook**
 [dot] **Short term** 15m–1d: **Bullish/Bearish/Neutral**. Likely move to **$price**. Wrong if condition.
 [dot] **Mid term** 1d–1w: **Bullish/Bearish/Neutral**. Likely move to **$price**. Wrong if condition.
 [dot] **Long term** 1w+: **Bullish/Bearish/Neutral**. Likely move to **$price**. Wrong if condition.
-where [dot] is 🟢 for Bullish, 🔴 for Bearish, ⚪ for Neutral. A Neutral line is written as a condition instead:
-⚪ **Long term** 1w+: **Neutral**. Move to **$target** if we lose **$level**. Invalid if we hold **$level**.
-(or "if we break above **$level**" for the upside case). Never write "chop between" a wide range."""
+where [dot] is 🟢 for Bullish, 🔴 for Bearish, ⚪ for Neutral."""
 
 HORIZONS = """Base each horizon on the data that fits it: short term (15 minutes to 1 day) on the 5-minute spot vs
 perp flow, the order book, the range edge and the last hours of CVD and liquidations; mid term (1 day to 1 week)
 on hourly CVD, open interest, funding, the 72h range and the 7-day highs/lows; long term (1 week+) on the
 daily_trend data (30/90-day change, 90-day range, 20/50/100-day averages, 30-day open interest). If daily_trend
 is unavailable, say Neutral for long term. Say Neutral for any horizon with no edge. The horizons can disagree
-(e.g. a short-term bounce inside a longer downtrend); that is fine.
-
-Choose each target as the nearest level the data gives a real reason to trade to (range edges, 24h/7d or 90-day
-highs and lows, moving averages, walls), not a distance picked to look big. daily_trend.typical_range_pct says
-how far BTC usually travels in a day, a week and a month: treat those as the furthest a target can reasonably
-be for that horizon, not a distance it has to reach. Only place a longer-horizon target further out when the
-data gives a reason to (a trend, a level, positioning that points there); otherwise it can stay at the same
-level as the shorter one. The one floor: a long-term target should not sit inside normal daily noise (closer
-than about one typical 1-day range)."""
+(e.g. a short-term bounce inside a longer downtrend); that is fine."""
 
 DAILY_QUESTION = f"""Write the BTC market report in exactly this layout:
 
