@@ -71,6 +71,19 @@ def main():
     if not any(k.startswith("confluence-all3-") for k in keys) or again:
         bad += 1
         print("alert flow wrong", keys, again)
+    # HTF bottom: no cooldown, one alert per daily close it is on (two consecutive signal days -> two alerts)
+    days = sorted(want)
+    d1, d2 = next((a, b) for a, b in zip(days, days[1:]) if b - a == D)
+    sent, got = {}, []
+    for d in (d1, d1, d2):  # the second check of the same close must not repeat
+        NOW[0] = d + D + 60_000
+        for k, _ in cf.detect_alerts(sent, NOW[0]):
+            sent[k] = NOW[0] / 1000
+            got.append(k)
+    htf_keys = [k for k in got if k.startswith("confluence-htf-")]
+    if htf_keys != [f"confluence-htf-{d1}", f"confluence-htf-{d2}"]:
+        bad += 1
+        print("HTF alert flow wrong", htf_keys)
     print("FAILED" if bad else "OK")
     return 1 if bad else 0
 

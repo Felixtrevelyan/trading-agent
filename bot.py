@@ -149,8 +149,7 @@ async def confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def remember_alert(key):
     sent_alerts[key] = time.time()
-    # confluence keys stay 31 days so the HTF bottom's 30-day cooldown holds across restarts
-    for k in [k for k, t in sent_alerts.items() if time.time() - t > (31 if k.startswith("confluence-") else 3) * 86400]:
+    for k in [k for k, t in sent_alerts.items() if time.time() - t > 3 * 86400]:
         del sent_alerts[k]
     try:
         with open(ALERTS_FILE, "w") as f:

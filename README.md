@@ -14,7 +14,7 @@ Confluence alerts (`confluence.py`, from the BTC Flow Desk research) check every
 - **Fear + flush:** DVOL up 3+ pts and Binance OI down 3%+ in 24h. A 1-3 day long setup; re-alerted at most once a day.
 - **All three:** fear + flush with Binance funding at or below zero (crowded shorts).
 - **HTF bottom:** on the daily close, all five of: 200-day average rising, price 8%+ below the 50-day average,
-  RSI(14) <= 38, 7 days of net taker selling, and OI down 8%+ over 30 days. A multi-week swing long; re-alerted at most every 30 days.
+  RSI(14) <= 38, 7 days of net taker selling, and OI down 8%+ over 30 days. A multi-week swing long; alerts once for every daily close it is on.
 
 `/confluence` shows the current reading of all of them. `python tests/test_confluence.py` replays recorded history through
 the module offline and checks it still matches the backtest.

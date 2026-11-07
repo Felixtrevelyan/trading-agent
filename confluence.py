@@ -27,7 +27,8 @@ HTF_MA50 = -0.08
 HTF_RSI = 38.0
 HTF_OI_30D = -0.08
 # re-alert the same setup only after this long (the backtests spaced signals the same way)
-COOLDOWN_S = {"pair": 24 * 3600, "all3": 24 * 3600, "htf": 30 * 86400}
+COOLDOWN_S = {"pair": 24 * 3600, "all3": 24 * 3600}
+# the HTF bottom has no cooldown: it alerts once for every daily close it is on (it is rare)
 
 
 def _get(url, **params):
@@ -120,7 +121,7 @@ def _recent(sent, kind, now_s):
 
 def detect_alerts(sent, now_ms=None):
     """[(key, message)] for setups that are on now and were not alerted within their cooldown.
-    sent: bot.sent_alerts (key -> unix time sent). Keep those keys for at least 30 days so the HTF cooldown holds."""
+    sent: bot.sent_alerts (key -> unix time sent)."""
     now_s = (now_ms or int(time.time() * 1000)) / 1000
     out = []
     s = short_term(now_ms)
@@ -135,7 +136,7 @@ def detect_alerts(sent, now_ms=None):
                     f"OI {s['oi_chg24'] * 100:+.1f}% in 24h\n"
                     f"Funding {s['funding_8h'] * 3 * 365 * 100:+.1f}% a year{' (shorts paying)' if s['shorts'] else ''}"))
     h = htf(now_ms)
-    if h and h["on"] and not _recent(sent, "htf", now_s):
+    if h and h["on"] and f"confluence-htf-{h['day']}" not in sent:
         day = time.strftime("%Y-%m-%d", time.gmtime(h["day"] / 1000))
         out.append((f"confluence-htf-{h['day']}",
                     f"HIGHER TIMEFRAME BOTTOM: all five conditions met on the {day} daily close. Multi-week swing long setup.\n"
